@@ -20,6 +20,10 @@
       <TextBlock Text="パスワード" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,3"/>
       <PasswordBox x:Name="PassBox" Style="{StaticResource FieldPasswordBox}"/>
       <TextBlock x:Name="ErrorText" Foreground="{StaticResource ErrorBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
+      <!-- エラー 1219（別のユーザーで接続中）のときだけ出す -->
+      <Button x:Name="DisconnectButton" Style="{StaticResource LinkButton}" Content="切断して再試行" HorizontalAlignment="Left"
+              Margin="-5,2,0,0" Visibility="Collapsed"
+              ToolTip="この PC からこのサーバーへの接続（ネットワーク ドライブなど）を切断して、もう一度接続する"/>
       <CheckBox x:Name="SaveBox" Content="資格情報を保存する" IsChecked="True" Margin="0,12,0,0"
                 ToolTip="Windows の資格情報マネージャーに保存し、次回から入力を省きます"/>
       <!-- 複数のサーバーに送るとき、ログオンが必要なほかのサーバーにも同じアカウントで接続する -->

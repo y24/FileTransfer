@@ -144,4 +144,51 @@ function Connect-FtShareGroup {
     return , $results
 }
 
-Export-ModuleMember -Function Get-FtAccessStatus, Test-FtTcpPort, Test-FtShareAccess, Get-FtCurrentUser, Get-FtSavedUser, Get-FtHostAliases, Connect-FtShare, Disconnect-FtShare, Convert-FtUserForHost, Connect-FtShareGroup
+# 接続一覧（"ローカル名|リモート名"）から、指定したホスト名（別名を含む）への接続を選ぶ
+function Select-FtHostConnections {
+    param([string[]]$Connections, [string[]]$Names)
+    $selected = @()
+    foreach ($entry in @($Connections)) {
+        $parts = "$entry".Split([char[]]'|', 2)
+        if ($parts.Count -lt 2) { continue }
+        if ($parts[1] -notmatch '^\\\\([^\\]+)') { continue }
+        $hostName = $Matches[1]
+        if (@($Names | Where-Object { $_ -ieq $hostName }).Count -gt 0) {
+            $selected += @{ Local = $parts[0]; Remote = $parts[1] }
+        }
+    }
+    return , $selected
+}
+
+# この PC からそのサーバーへの「net use」の接続（ネットワーク ドライブを含む）
+# IncludeAliases を付けると FQDN・IP アドレスでの接続も探す（名前解決をするので少し遅い）
+function Get-FtHostConnections {
+    param([string]$HostName, [switch]$IncludeAliases)
+    $names = @($HostName)
+    if ($IncludeAliases) { $names += Get-FtHostAliases $HostName }
+    return , (Select-FtHostConnections -Connections ([FileTransfer.Native]::GetConnections()) -Names $names)
+}
+
+function Format-FtConnection {
+    param([hashtable]$Connection)
+    if ($Connection.Local) { return "$($Connection.Local)（$($Connection.Remote)）" }
+    return $Connection.Remote
+}
+
+# エラー 1219（別のユーザーで接続中）を解消するため、そのサーバーへの接続を切断する（バックグラウンドで呼ぶ）
+# 使用中のファイルがある接続は無理に切らない（force = false）。ネットワーク ドライブの登録自体は残る
+# 戻り値: @{ HostName; Closed = 切断した接続の説明; Failed = 切断できなかった接続の説明 }
+function Disconnect-FtHostConnections {
+    param([string]$HostName)
+    $closed = @()
+    $failed = @()
+    foreach ($connection in (Get-FtHostConnections -HostName $HostName -IncludeAliases)) {
+        $name = if ($connection.Local) { $connection.Local } else { $connection.Remote }
+        $code = [FileTransfer.Native]::CancelConnection($name, $false)
+        if ($code -eq 0) { $closed += Format-FtConnection $connection }
+        else { $failed += "$(Format-FtConnection $connection)（エラー $code）" }
+    }
+    return @{ HostName = $HostName; Closed = $closed; Failed = $failed }
+}
+
+Export-ModuleMember -Function Get-FtAccessStatus, Test-FtTcpPort, Test-FtShareAccess, Get-FtCurrentUser, Get-FtSavedUser, Get-FtHostAliases, Connect-FtShare, Disconnect-FtShare, Convert-FtUserForHost, Connect-FtShareGroup, Select-FtHostConnections, Get-FtHostConnections, Format-FtConnection, Disconnect-FtHostConnections

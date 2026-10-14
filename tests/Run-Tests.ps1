@@ -208,6 +208,18 @@ Assert-Equal 'SV-APP02\Administrator' (Convert-FtUserForHost 'SV-APP01\Administr
 Assert-Equal 'SV-APP02\Administrator' (Convert-FtUserForHost '.\Administrator' 'SV-APP01' 'SV-APP02') '.\ local account'
 Assert-Equal 'CORP\yamada' (Convert-FtUserForHost 'CORP\yamada' 'SV-APP01' 'SV-APP02') 'domain account is unchanged'
 Assert-Equal 'yamada@corp.example' (Convert-FtUserForHost 'yamada@corp.example' 'SV-APP01' 'SV-APP02') 'UPN is unchanged'
+$connectionList = @('Z:|\\SV-APP01\Share', '|\\sv-app01\IPC$', '|\\SV-APP01.corp.example\C$', 'Y:|\\fs01\work', 'broken')
+$selected = Select-FtHostConnections -Connections $connectionList -Names @('SV-APP01')
+Assert-Equal 'Z:|\\SV-APP01\Share;|\\sv-app01\IPC$' (($selected | ForEach-Object { "$($_.Local)|$($_.Remote)" }) -join ';') 'connections to the server (case-insensitive)'
+$selected = Select-FtHostConnections -Connections $connectionList -Names @('SV-APP01', 'sv-app01.corp.example')
+Assert-Equal 3 $selected.Count 'aliases are included'
+Assert-Equal 'Z:（\\SV-APP01\Share）' (Format-FtConnection @{ Local = 'Z:'; Remote = '\\SV-APP01\Share' }) 'format a drive connection'
+Assert-True ($null -ne [FileTransfer.Native]::GetConnections()) 'enumerating connections works'
+$none = Disconnect-FtHostConnections -HostName 'ft-nonexistent-host.invalid'
+Assert-True ($none.Closed.Count -eq 0 -and $none.Failed.Count -eq 0) 'nothing to disconnect for an unknown server'
+$conflict = Get-FtErrorInfo -Code 1219 -Target 'SV-APP01' -Server
+Assert-True ($conflict.NeedsDisconnect -and $conflict.NeedsLogon -and $conflict.Detail -like '*切断して再試行*') 'error 1219 offers disconnect and logon'
+Assert-True (-not (Get-FtErrorInfo -Code 5 -Server).NeedsDisconnect) 'access denied does not offer disconnect'
 $watch = [Diagnostics.Stopwatch]::StartNew()
 $access = Test-FtShareAccess '\\ft-nonexistent-host.invalid\C$' -TimeoutMs 1500
 Assert-Equal 'unreachable' $access.Status 'unknown host is unreachable'
@@ -301,6 +313,30 @@ if ($null -ne $sync.Result -and $sync.Result.Status -eq 'success') {
     Assert-True ($progressSeen -gt 0) "progress was reported before cancel ($progressSeen bytes)"
 }
 
+Section 'Free space'
+Assert-True ([FileTransfer.Native]::GetFreeBytes("$WorkDir\") -gt 0) 'free bytes of a local folder'
+Assert-Equal -1 ([FileTransfer.Native]::GetFreeBytes('\\ft-nonexistent-host.invalid\C$\')) 'unknown server: -1'
+Assert-Equal $WorkDir (Get-FtExistingFolder "$WorkDir\not\yet\created") 'nearest existing folder'
+$spaceDest = Join-Path $WorkDir 'space'
+New-Item -ItemType Directory -Path $spaceDest -Force | Out-Null
+Copy-Item -LiteralPath "$src\日本語ファイル.txt" -Destination $spaceDest
+$spaceItems = @(
+    @{ Path = "$src\日本語ファイル.txt"; IsFolder = $false; Size = (Get-Item -LiteralPath "$src\日本語ファイル.txt").Length },
+    @{ Path = $big; IsFolder = $false; Size = 40MB },
+    @{ Path = "$src\folder"; IsFolder = $true; Size = 3 }
+)
+Assert-Equal (40MB + 3) (Get-FtRequiredBytes -Items $spaceItems -Dest $spaceDest) 'files already at the destination with the same size are not counted'
+$hugeItem = @(@{ Path = '\\fs01\patches\huge.bin'; IsFolder = $false; Size = 1PB })
+$space = Test-FtFreeSpace -Items $hugeItem -Targets @(@{ Name = 'このPC'; Dest = "$WorkDir\space\new" }) -StageFolder "$WorkDir\stage"
+Assert-Equal 2 $space.Count 'the staging folder and the destination are checked'
+Assert-True ($space[0].Short -and $space[1].Short -and $space[0].Name -like '*取得*') '1 PB does not fit'
+Assert-True ((Format-FtFreeSpace $space[1]) -like 'このPC（C:）：空き * ／ 必要 1,024.00 TB' -or $WorkDir -notlike 'C:*') "format ($(Format-FtFreeSpace $space[1]))"
+Assert-Equal '1.50 TB' ([FileTransfer.FileItem]::FormatSize(1.5TB)) 'size TB'
+$space = Test-FtFreeSpace -Items $hugeItem -Targets @(@{ Name = 'このPC'; Dest = "$WorkDir\space\new" }) -StageFolder "$WorkDir\stage" -StageReused
+Assert-Equal 1 $space.Count 'a reused staging folder is not checked again'
+$space = Test-FtFreeSpace -Items @($spaceItems[0]) -Targets @(@{ Name = 'x'; Dest = '\\ft-nonexistent-host.invalid\C$\Work' })
+Assert-True ($space[0].Free -eq -1 -and -not $space[0].Short) 'unknown free space is not reported as a shortage'
+
 Section 'Distribution (two destinations, staging, partial failure)'
 $sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 $sessionState.ExecutionPolicy = [Microsoft.PowerShell.ExecutionPolicy]::Bypass
@@ -393,7 +429,22 @@ Assert-True ($cli.Code -eq 0 -and (Test-Path -LiteralPath "$WorkDir\cli1\$today\
 $cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli2", "$src\*.txt")
 Assert-True ($cli.Code -eq 0 -and (Test-Path -LiteralPath "$WorkDir\cli2\日本語ファイル.txt")) "wildcard source (exit $($cli.Code))"
 $cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli3", "$src\日本語ファイル.txt", '-WhatIf')
-Assert-True ($cli.Code -eq 0 -and -not (Test-Path -LiteralPath "$WorkDir\cli3") -and $cli.Output -like '*robocopy*') "-WhatIf only shows the plan (exit $($cli.Code))"
+Assert-True ($cli.Code -eq 0 -and -not (Test-Path -LiteralPath "$WorkDir\cli3") -and $cli.Output -like '*robocopy*' -and $cli.Output -like '*空き容量:*') "-WhatIf only shows the plan and free space (exit $($cli.Code))"
+# 見かけだけ 1 TB のファイル（スパースファイル。ディスクは使わない）で、空き容量の不足を起こす
+$sparse = Join-Path $WorkDir 'sparse\huge-sparse.bin'
+New-Item -ItemType Directory -Path (Split-Path $sparse) -Force | Out-Null
+[IO.File]::WriteAllBytes($sparse, [byte[]]@())
+& fsutil.exe sparse setflag $sparse | Out-Null
+$stream = [IO.File]::Open($sparse, 'Open', 'ReadWrite'); $stream.SetLength(1TB); $stream.Close()
+if ([FileTransfer.Native]::GetFreeBytes("$WorkDir\") -lt 1TB) {
+    $cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli7", $sparse)
+    Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*空き容量が足りません*' -and $cli.Output -like '*-SkipSpaceCheck*' -and -not (Test-Path -LiteralPath "$WorkDir\cli7")) "not enough free space stops before copying (exit $($cli.Code))"
+    $cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli7", $sparse, '-WhatIf')
+    Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*問題*空き容量が足りません*') "-WhatIf reports the shortage (exit $($cli.Code))"
+} else {
+    Write-Host '    (info) more than 1 TB free; shortage test skipped' -ForegroundColor Yellow
+}
+[IO.File]::Delete($sparse)
 $cli = Invoke-Cli @('-Destination', 'ft-nonexistent-host.invalid', '-Folder', 'C:\Work', "$src\日本語ファイル.txt")
 Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*接続できません*') "unreachable server (exit $($cli.Code))"
 $cli = Invoke-Cli @('-Destination', 'ft-nonexistent-host.invalid', '-Folder', 'C:\Work\{date}', "$src\日本語ファイル.txt", '-WhatIf')

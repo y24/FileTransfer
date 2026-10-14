@@ -1,6 +1,7 @@
 // Win32 API wrappers used by FileTransfer.
 // Keep this file ASCII-only: Add-Type does not reliably detect UTF-8 without BOM.
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Security;
 
@@ -9,6 +10,8 @@ namespace FileTransfer
     public static class Native
     {
         const int RESOURCETYPE_ANY = 0;
+        const int RESOURCE_CONNECTED = 1;
+        const int ERROR_MORE_DATA = 234;
         const int CRED_TYPE_DOMAIN_PASSWORD = 2;
         const int CRED_PERSIST_LOCAL_MACHINE = 2;
         const uint INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF;
@@ -51,6 +54,18 @@ namespace FileTransfer
         [DllImport("kernel32.dll")]
         static extern uint GetOEMCP();
 
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool GetDiskFreeSpaceExW(string directory, out ulong freeBytesAvailable, out ulong totalBytes, out ulong totalFreeBytes);
+
+        [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+        static extern int WNetOpenEnum(int scope, int type, int usage, IntPtr netResource, out IntPtr handle);
+
+        [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+        static extern int WNetEnumResource(IntPtr handle, ref int count, IntPtr buffer, ref int bufferSize);
+
+        [DllImport("mpr.dll")]
+        static extern int WNetCloseEnum(IntPtr handle);
+
         [DllImport("user32.dll", SetLastError = true)]
         static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
@@ -80,6 +95,56 @@ namespace FileTransfer
         {
             uint attributes = GetFileAttributesW(path);
             return attributes == INVALID_FILE_ATTRIBUTES ? Marshal.GetLastWin32Error() : 0;
+        }
+
+        // Free bytes available to the current user on the volume that contains the directory
+        // (local path or \\host\share\), or -1 when it cannot be determined.
+        public static long GetFreeBytes(string directory)
+        {
+            ulong free, total, totalFree;
+            if (!GetDiskFreeSpaceExW(directory, out free, out total, out totalFree)) return -1;
+            return free > (ulong)long.MaxValue ? long.MaxValue : (long)free;
+        }
+
+        // Network connections of the current user (what "net use" lists), as "local|remote".
+        // local is "" for connections without a drive letter.
+        public static string[] GetConnections()
+        {
+            List<string> result = new List<string>();
+            IntPtr handle;
+            if (WNetOpenEnum(RESOURCE_CONNECTED, RESOURCETYPE_ANY, 0, IntPtr.Zero, out handle) != 0) return result.ToArray();
+            int bufferSize = 16384;
+            IntPtr buffer = Marshal.AllocHGlobal(bufferSize);
+            try
+            {
+                int structSize = Marshal.SizeOf(typeof(NETRESOURCE));
+                while (true)
+                {
+                    int count = -1;
+                    int size = bufferSize;
+                    int code = WNetEnumResource(handle, ref count, buffer, ref size);
+                    if (code == ERROR_MORE_DATA)
+                    {
+                        Marshal.FreeHGlobal(buffer);
+                        bufferSize = Math.Max(size, bufferSize * 2);
+                        buffer = Marshal.AllocHGlobal(bufferSize);
+                        continue;
+                    }
+                    if (code != 0) break;
+                    for (int i = 0; i < count; i++)
+                    {
+                        IntPtr item = new IntPtr(buffer.ToInt64() + (long)i * structSize);
+                        NETRESOURCE resource = (NETRESOURCE)Marshal.PtrToStructure(item, typeof(NETRESOURCE));
+                        result.Add((resource.lpLocalName ?? "") + "|" + (resource.lpRemoteName ?? ""));
+                    }
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+                WNetCloseEnum(handle);
+            }
+            return result.ToArray();
         }
 
         // Code page robocopy uses when its output is redirected.

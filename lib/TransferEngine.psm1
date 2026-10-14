@@ -360,7 +360,7 @@ function Get-FtErrorInfo {
         { $_ -in 51, 53, 64, 121, 1231, 1232 } { @{ Short = "${Target} に接続できません"; Detail = "ネットワーク パスが見つからないか、接続が切れました（エラー $Code）。`nホスト名と、サーバーでファイル共有（445 番ポート）が許可されているか確認してください。" } }
         67 { @{ Short = '共有が見つかりません'; Detail = "共有フォルダが見つかりません（エラー 67）。サーバーの管理共有（C$ など）が無効になっている可能性があります。" } }
         112 { @{ Short = 'ディスクの空き容量が足りません'; Detail = "送り先のディスクの空き容量が足りません（エラー 112）。" } }
-        1219 { @{ Short = "${Target}：別のユーザーで接続中です"; NeedsLogon = $true; Detail = "このサーバーには、別のユーザーで接続中です（エラー 1219）。`nエクスプローラーなどで開いている接続を閉じてから、［ログオン…］で接続し直してください。" } }
+        1219 { @{ Short = "${Target}：別のユーザーで接続中です"; NeedsLogon = $true; NeedsDisconnect = $true; Detail = "このサーバーには、別のユーザーで接続中です（エラー 1219）。`n［切断して再試行］で、この PC からそのサーバーへの接続（ネットワーク ドライブなど）を切断して接続し直せます。それでも直らないときは、エクスプローラーでそのサーバーを開いているウィンドウを閉じ、数分待ってから再試行してください。" } }
         { $_ -in 86, 1326 } { @{ Short = 'ユーザー名またはパスワードが正しくありません'; NeedsLogon = $true; Detail = "ユーザー名またはパスワードが正しくありません（エラー $Code）。" } }
         1311 { @{ Short = 'ログオン サーバーに接続できません'; Detail = "ドメインのログオン サーバーに接続できません（エラー 1311）。" } }
         1331 { @{ Short = 'アカウントが無効です'; NeedsLogon = $true; Detail = "このアカウントは無効になっています（エラー 1331）。" } }
@@ -378,6 +378,7 @@ function Get-FtErrorInfo {
         }
     }
     if (-not $info.ContainsKey('NeedsLogon')) { $info.NeedsLogon = $false }
+    if (-not $info.ContainsKey('NeedsDisconnect')) { $info.NeedsDisconnect = $false }
     return $info
 }
 

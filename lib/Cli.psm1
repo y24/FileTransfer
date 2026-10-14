@@ -1,6 +1,6 @@
 ﻿# コマンドラインからの実行（画面を出さずに転送する）
 #   FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder 'C:\Work\{datetime}' \\fs01\patches\*.msu
-# 終了コード: 0 成功 / 1 転送に失敗（一部の送り先を含む）/ 2 指定の誤り・接続できない
+# 終了コード: 0 成功 / 1 転送に失敗（一部の送り先を含む）/ 2 指定の誤り・接続できない・空き容量が足りない
 # Ctrl+C で止めると、実行中の robocopy も止める
 
 $script:Usage = @'
@@ -14,10 +14,12 @@ $script:Usage = @'
   -Credential <ユーザー名>  ログオンが必要なサーバーに、このアカウントで接続する（パスワードを聞かれる）
   -SaveCredential          そのアカウントを Windows 資格情報マネージャーに保存する
   -KeepLocalCopy           共有のファイルを、この PC にもコピーして残す
-  -WhatIf                  送り先と robocopy のコマンドを表示するだけで、転送しない
-                           （接続できないサーバーがあれば、それも表示して終了コード 2）
+  -DisconnectExisting      別のユーザーで接続中（エラー 1219）のサーバーは、その接続を切断してからログオンし直す
+  -SkipSpaceCheck          送り先の空き容量が足りなくても転送する
+  -WhatIf                  送り先・空き容量・robocopy のコマンドを表示するだけで、転送しない
+                           （接続できないサーバーや空き容量の不足があれば、それも表示して終了コード 2）
 
-終了コード: 0 成功 / 1 転送に失敗（一部の送り先を含む）/ 2 指定の誤り・接続できない
+終了コード: 0 成功 / 1 転送に失敗（一部の送り先を含む）/ 2 指定の誤り・接続できない・空き容量が足りない
 
 例:
   FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\Work\{datetime} \\fs01\patches\2026-10\*.msu
@@ -32,6 +34,22 @@ function Write-FtCli {
 function Write-FtCliError {
     param([string]$Message)
     Write-Host $Message -ForegroundColor Red
+}
+
+function Write-FtCliDisconnect {
+    param([hashtable]$Result)
+    foreach ($connection in $Result.Closed) { Write-FtCli "  $($Result.HostName): 接続を切断しました - $connection" }
+    foreach ($connection in $Result.Failed) { Write-FtCliError "  $($Result.HostName): 使用中のため切断できませんでした - $connection" }
+    if ($Result.Closed.Count -eq 0 -and $Result.Failed.Count -eq 0) { Write-FtCli "  $($Result.HostName): 切断できる接続はありませんでした" }
+    if ($Result.Closed.Count -gt 0) { Write-FtLog ("切断しました: " + ($Result.Closed -join '、')) }
+}
+
+# エラー 1219 のときの案内（今ある接続と、-DisconnectExisting）
+function Get-FtCliConflictHint {
+    param([string]$HostName)
+    $connections = @(Get-FtHostConnections -HostName $HostName | ForEach-Object { Format-FtConnection $_ })
+    $list = if ($connections.Count -gt 0) { "（接続中: $($connections -join '、')）" } else { '' }
+    return "$list -DisconnectExisting を付けると、その接続を切断してから接続し直します。"
 }
 
 # 送るファイルの指定を、実在するパスの一覧にする（* ? を展開）
@@ -85,6 +103,8 @@ function Invoke-FtCli {
         [switch]$SaveCredential,
         [switch]$KeepLocalCopy,
         [switch]$PlanOnly,
+        [switch]$SkipSpaceCheck,
+        [switch]$DisconnectExisting,
         [hashtable]$Config,
         [string[]]$ModulePaths
     )
@@ -113,32 +133,43 @@ function Invoke-FtCli {
     $distribution = $null
     $stage = $null
     try {
-        # 接続確認（必要ならログオン）。-WhatIf のときはログオンせず、問題は警告として出して計画は表示する
+        # 接続確認（必要ならログオン）。-WhatIf のときはログオンも切断もせず、問題は警告として出して計画は表示する
         $problems = @()
         if (-not $resolved.IsLocal) {
             foreach ($target in $resolved.Targets) {
+                $hostName = $target.HostName
                 $access = Test-FtShareAccess -ShareRoot $target.ShareRoot
+                if ($access.Status -eq 'conflict' -and $DisconnectExisting -and -not $PlanOnly) {
+                    Write-FtCliDisconnect (Disconnect-FtHostConnections -HostName $hostName)
+                    $access = Test-FtShareAccess -ShareRoot $target.ShareRoot
+                }
                 if ($access.Status -in 'auth', 'conflict' -and $Credential -and $PlanOnly) {
-                    $problems += "$($target.HostName): ログオンが必要です（実行時に -Credential のアカウントでログオンします）"
+                    $problems += "${hostName}: ログオンが必要です（実行時に -Credential のアカウントでログオンします）"
                     continue
                 }
                 if ($access.Status -in 'auth', 'conflict' -and $Credential) {
-                    $user = Convert-FtUserForHost -UserName $Credential.UserName -FromHost $resolved.Targets[0].HostName -ToHost $target.HostName
-                    $logon = Connect-FtShare -HostName $target.HostName -ShareRoot $target.ShareRoot -UserName $user -Password $Credential.Password -Save:$SaveCredential
+                    $user = Convert-FtUserForHost -UserName $Credential.UserName -FromHost $resolved.Targets[0].HostName -ToHost $hostName
+                    $logon = Connect-FtShare -HostName $hostName -ShareRoot $target.ShareRoot -UserName $user -Password $Credential.Password -Save:$SaveCredential
+                    if ($logon.Code -eq 1219 -and $DisconnectExisting) {
+                        # 別のユーザーで接続中: その接続を切断してからもう一度
+                        Write-FtCliDisconnect (Disconnect-FtHostConnections -HostName $hostName)
+                        $logon = Connect-FtShare -HostName $hostName -ShareRoot $target.ShareRoot -UserName $user -Password $Credential.Password -Save:$SaveCredential
+                    }
                     if ($logon.Code -eq 0) {
                         $connections.Add($logon.Root)
-                        if ($logon.ConnectName -ine $target.HostName) { $alias[$target.HostName] = $logon.ConnectName }
-                        Write-FtCli "  $($target.HostName): $user でログオンしました"
+                        if ($logon.ConnectName -ine $hostName) { $alias[$hostName] = $logon.ConnectName }
+                        Write-FtCli "  ${hostName}: $user でログオンしました"
                         continue
                     }
-                    $info = Get-FtErrorInfo -Code $logon.Code -Target $target.HostName -Server
-                    $problems += "$($target.HostName): $($info.Short)（エラー $($logon.Code)）"
+                    $info = Get-FtErrorInfo -Code $logon.Code -Target $hostName -Server
+                    $hint = if ($logon.Code -eq 1219 -and -not $DisconnectExisting) { Get-FtCliConflictHint $hostName } else { '' }
+                    $problems += "${hostName}: $($info.Short)（エラー $($logon.Code)）$hint"
                     continue
                 }
                 switch ($access.Status) {
                     'ok'          { }
-                    'auth'        { $problems += "$($target.HostName): ログオンが必要です。画面でログオンして資格情報を保存するか、-Credential を指定してください。" }
-                    'conflict'    { $problems += "$($target.HostName): 別のユーザーで接続中です。-Credential を指定するか、ほかの接続を閉じてください。" }
+                    'auth'        { $problems += "${hostName}: ログオンが必要です。画面でログオンして資格情報を保存するか、-Credential を指定してください。" }
+                    'conflict'    { $problems += "${hostName}: 別のユーザーで接続中です。-Credential を指定してください。$(Get-FtCliConflictHint $hostName)" }
                     'unreachable' { $problems += "$($target.HostName): 接続できません（ホスト名と、ファイル共有の 445 番ポートを確認してください）" }
                     'noshare'     { $problems += "$($target.HostName): $($target.ShareRoot) が見つかりません（管理共有が無効の可能性があります）" }
                     default       { $problems += "$($target.HostName): 確認でエラーが発生しました（エラー $($access.Code)）" }
@@ -168,6 +199,26 @@ function Invoke-FtCli {
         foreach ($target in $targets) { Write-FtCli "  $($target.Name): $($target.Dest)" }
         if ($stage) { Write-FtCli "  （共有のファイルは、先にこの PC に取得します: $($stage.Folder)）" }
 
+        # 空き容量
+        $space = Test-FtFreeSpace -Items $items -Targets $targets -StageFolder $(if ($stage) { $stage.Folder } else { '' })
+        $shortages = @($space | Where-Object { $_.Short })
+        foreach ($result in @($space | Where-Object { $_.Free -lt 0 })) { Write-FtLog "空き容量を確認できませんでした: $($result.Name) $($result.Path)" }
+        if ($PlanOnly) {
+            Write-FtCli ''
+            Write-FtCli '空き容量:' 'Cyan'
+            foreach ($result in $space) { Write-FtCli ("  " + (Format-FtFreeSpace $result)) $(if ($result.Short) { 'Yellow' } else { '' }) }
+            foreach ($shortage in $shortages) { $problems += '空き容量が足りません：' + (Format-FtFreeSpace $shortage) }
+        } elseif ($shortages.Count -gt 0) {
+            foreach ($shortage in $shortages) { Write-FtLog "空き容量不足: $(Format-FtFreeSpace $shortage)" }
+            if ($SkipSpaceCheck) {
+                foreach ($shortage in $shortages) { Write-FtCli ('空き容量が足りませんが、-SkipSpaceCheck のため転送します：' + (Format-FtFreeSpace $shortage)) 'Yellow' }
+            } else {
+                foreach ($shortage in $shortages) { Write-FtCliError ('空き容量が足りません：' + (Format-FtFreeSpace $shortage)) }
+                Write-FtCliError '足りなくても転送するときは -SkipSpaceCheck を付けてください。'
+                return 2
+            }
+        }
+
         if ($PlanOnly) {
             $plan = New-FtDistribution -Items $items -Targets $targets -StageFolder $(if ($stage) { $stage.Folder } else { '' }) -Options $options
             Write-FtCli ''
@@ -178,7 +229,7 @@ function Invoke-FtCli {
             }
             if ($problems.Count -gt 0) {
                 Write-FtCli ''
-                Write-FtCli '接続の問題（このままでは転送できません）:' 'Yellow'
+                Write-FtCli '問題（このままでは転送できません）:' 'Yellow'
                 $problems | ForEach-Object { Write-FtCli "  $_" 'Yellow' }
                 return 2
             }

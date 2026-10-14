@@ -131,7 +131,7 @@ Save-Screen $window '03-duplicate-notice'
 Write-Host '04 running, then cancel'
 Set-Destination (Get-FtLocalLabel) (Join-Path $WorkDir 'local\{datetime}')
 Start-FtTransfer
-Wait-Until { $script:Run.Dist.Hosts[0].Sync.BytesDone -gt 0 } -What 'progress' -TimeoutMs 20000
+Wait-Until { $script:Run.Dist -and $script:Run.Dist.Hosts[0].Sync.BytesDone -gt 0 } -What 'progress' -TimeoutMs 20000
 Wait-Ui 300
 Assert-True ($script:Phase -eq 'running') 'phase is running'
 Assert-True ($ui.ProgressPanel.Visibility -eq 'Visible' -and $ui.StartButton.Visibility -eq 'Collapsed') 'progress replaces the start button'
@@ -282,6 +282,107 @@ $d.ApplyOthersText.Text = 'ログオンが必要なほかの 2 台（SV-APP02、
 $d.ApplyOthersBox.Visibility = 'Visible'
 Show-Offscreen $dialog
 Save-Screen $dialog '15-logon-multi'
+$dialog.Close()
+
+# ---- 空き容量の確認（確認ダイアログは差し替える）----
+function Confirm-FtLowSpace {
+    param([object[]]$Shortages)
+    $script:LowSpaceAsked = $Shortages
+    return $script:LowSpaceAnswer
+}
+$script:Config.transfer.retryCount = 2
+
+Write-Host '16 not enough free space: stop / continue'
+Remove-FtItems @($script:Items)
+Add-FtPaths @("$src\other\設定_20261015.zip")
+$script:Items[0].Size = 1PB   # 見かけのサイズだけ大きくする（実際に送るのは小さいファイル）
+$lowSpaceFolder = Join-Path $WorkDir 'lowspace\{date}'
+Set-Destination (Get-FtLocalLabel) $lowSpaceFolder
+$script:LowSpaceAsked = $null
+$script:LowSpaceAnswer = $false
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'space check'
+Assert-True ($null -ne $script:LowSpaceAsked -and @($script:LowSpaceAsked)[0].Required -eq 1PB) 'the user is asked when space is short'
+Assert-True ($script:Phase -eq 'idle' -and $ui.ResultText.Text -like '*空き容量が足りないため*') "declining stops the transfer ($($ui.ResultText.Text))"
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $WorkDir 'lowspace'))) 'nothing was copied'
+Save-Screen $window '16-low-space-declined'
+$script:LowSpaceAnswer = $true
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'transfer after confirming'
+Assert-True ($script:Phase -eq 'done') "continuing transfers anyway ($($script:Phase); $($ui.ResultText.Text))"
+Assert-True (@($script:RunLog | Where-Object { $_ -like '*空き容量が足りないまま転送*' }).Count -gt 0) 'the log notes the shortage'
+$script:LowSpaceAsked = $null
+$script:Items[0].Size = (Get-Item -LiteralPath "$src\other\設定_20261015.zip").Length
+Set-Destination (Get-FtLocalLabel) (Join-Path $WorkDir 'lowspace2')
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'normal transfer'
+Assert-True ($null -eq $script:LowSpaceAsked -and $script:Phase -eq 'done') 'no question when there is enough space'
+# 2 GB を超える値（Int32 を超える）でも進捗の文字列を作れるか
+$progressText = Format-FtProgressText -Done 2GB -Total 4GB -Speed 100MB -HostsTotal 3 -HostsSucceeded 1
+Assert-True ($progressText -eq '50%・1/3 台完了・100.0 MB/s・残り 21 秒') "progress text with large sizes ($progressText)"
+Assert-True ((Format-FtProgressText -Done 3TB -Total 4TB -Speed 1GB -Staging $true) -like '75%・この PC へ取得中・1.00 GB/s・残り *') 'progress text while staging'
+
+Write-Host '16b transfer a file larger than 2 GB'
+$largeFile = Join-Path $src 'large-3gb.bin'
+$stream = [IO.File]::Create($largeFile); $stream.SetLength(3GB); $stream.Close()
+Remove-FtItems @($script:Items)
+Add-FtPaths @($largeFile)
+Set-Destination (Get-FtLocalLabel) (Join-Path $WorkDir 'large')
+$script:ProgressTexts = New-Object System.Collections.Generic.List[string]
+Start-FtTransfer
+while ($script:Phase -eq 'running') {
+    Wait-Ui 100
+    if ($ui.ProgressText.Text -like '*%*') { $script:ProgressTexts.Add($ui.ProgressText.Text) }
+}
+Assert-True ($script:Phase -eq 'done') "3 GB transfer done ($($script:Phase); $($ui.ResultText.Text))"
+Assert-True ((Get-Item -LiteralPath (Join-Path $WorkDir 'large\large-3gb.bin')).Length -eq 3GB) '3 GB file arrived'
+Write-Host "    (info) progress samples: $(($script:ProgressTexts | Select-Object -Unique -First 3) -join ' | ')"
+[IO.File]::Delete($largeFile)
+[IO.File]::Delete((Join-Path $WorkDir 'large\large-3gb.bin'))
+
+Write-Host '17 connected as another user: hint and disconnect'
+Set-Destination $env:COMPUTERNAME 'C:\Work\{datetime}'
+$script:Checks[$thisHost].Status = 'conflict'
+Update-FtView
+Assert-True ($ui.HintText.Text -like '*別のユーザーで接続中です*切断して再試行*ログオン…*') "conflict hint offers disconnect and logon ($($ui.HintText.Text))"
+Save-Screen $window '17-conflict-hint'
+Request-FtDisconnect @($thisHost)
+Wait-Until { $ui.ResultPanel.Visibility -eq 'Visible' -and @($script:Checks.Values | Where-Object { $_.Status -eq 'checking' }).Count -eq 0 } -What 'disconnect'
+Assert-True ($ui.ResultText.Text -like '*切断できる接続はありませんでした*') "nothing to disconnect is reported ($($ui.ResultText.Text))"
+Assert-True ((Get-FtCheck $thisHost).Status -eq 'ok') 'the server is checked again after disconnecting'
+
+Write-Host '18 transfer failed with error 1219'
+$fakeHost = @{
+    Name = $thisHost; HostName = $thisHost; IsLocal = $false; Dest = "\\$thisHost\C`$\Work\x"; Status = 'failed'; Elapsed = 1.0
+    Result = @{ Status = 'failed'; Code = 1219; ExitCode = 16; Message = ''; Missing = @() }
+    Sync = (New-FtSync); Bytes = 0L; Done = New-Object 'System.Collections.Generic.HashSet[string]'
+}
+$script:Run = @{
+    Dist = @{ Items = @(); Stage = $null; StageFolder = ''; Hosts = @($fakeHost); Cancel = $false; Status = 'done'; Started = (Get-Date) }
+    Now = (Get-Date); Key = (Get-FtDestKey); Stage = $null; IsLocal = $false; Started = (Get-Date)
+    Samples = New-Object System.Collections.Generic.List[object]; ItemCount = 1; Bytes = 1L; FailedNames = @()
+}
+$script:Phase = 'running'
+Complete-FtTransfer
+Assert-True ($script:Phase -eq 'error' -and $ui.ResultText.Text -like '*別のユーザーで接続中*') "1219 result ($($ui.ResultText.Text))"
+Assert-True ($ui.DisconnectLink.Visibility -eq 'Visible' -and $ui.LogonLink.Visibility -eq 'Visible' -and $script:DisconnectTargets -contains $thisHost) 'disconnect and logon links'
+Save-Screen $window '18-conflict-error'
+Request-FtDisconnect $script:DisconnectTargets
+Wait-Until { $ui.ResultText.Text -like '*切断できる接続はありませんでした*' } -What 'disconnect in error state'
+Assert-True ($script:Phase -eq 'error' -and -not $script:RetryAfterCheck) 'no retry when nothing was disconnected'
+
+Write-Host '19 logon dialog: connected as another user'
+$dialog = Read-FtXaml 'LogonDialog.xaml'
+$d = Get-FtNamedElements $dialog @('Heading', 'UserBox', 'UserPlaceholder', 'PassBox', 'ErrorText', 'DisconnectButton')
+$d.Heading.Text = 'SV-APP01 にログオン'
+$d.UserBox.Text = 'SV-APP01\Administrator'
+$d.UserPlaceholder.Visibility = 'Collapsed'
+$d.PassBox.Password = 'password'
+$d.ErrorText.Text = "SV-APP01 には、この PC から別のユーザーで接続中です（エラー 1219）。`n接続中：Z:（\\SV-APP01\Share）、\\SV-APP01\IPC`$"
+$d.ErrorText.Visibility = 'Visible'
+$d.DisconnectButton.Visibility = 'Visible'
+Show-Offscreen $dialog
+Save-Screen $dialog '19-logon-conflict'
 $dialog.Close()
 
 $window.Close()

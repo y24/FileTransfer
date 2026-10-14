@@ -81,7 +81,8 @@ namespace FileTransfer
             if (bytes == 0) return "0 KB";
             if (bytes < 1024L * 1024) return Math.Max(1, (long)Math.Ceiling(bytes / 1024.0)).ToString("N0") + " KB";
             if (bytes < 1024L * 1024 * 1024) return (bytes / 1048576.0).ToString("N1") + " MB";
-            return (bytes / 1073741824.0).ToString("N2") + " GB";
+            if (bytes < 1024L * 1024 * 1024 * 1024) return (bytes / 1073741824.0).ToString("N2") + " GB";
+            return (bytes / 1099511627776.0).ToString("N2") + " TB";
         }
 
         void Notify(string name)

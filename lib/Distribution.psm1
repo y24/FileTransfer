@@ -296,4 +296,72 @@ function Get-FtDistributionSummary {
     }
 }
 
-Export-ModuleMember -Function New-FtSync, Get-FtStageFolder, Get-FtStageRoot, Remove-FtStageFolder, New-FtDistribution, Step-FtDistribution, Stop-FtDistribution, Read-FtDistributionLog, Get-FtDistributionProgress, Get-FtDistributionSummary
+# パスのうち、実在するいちばん近いフォルダ（送り先フォルダはまだないことが多いため）
+function Get-FtExistingFolder {
+    param([string]$Path)
+    $current = $Path.TrimEnd('\')
+    if ($current -match '^[A-Za-z]:$') { $current += '\' }
+    while ($current) {
+        if ([System.IO.Directory]::Exists($current)) { return $current }
+        $current = [System.IO.Path]::GetDirectoryName($current)
+    }
+    return $null
+}
+
+# 送り先に必要な容量。同じ名前・同じサイズのファイルが既にあれば（やり直しのとき）数えない
+function Get-FtRequiredBytes {
+    param([object[]]$Items, [string]$Dest)
+    $total = 0L
+    foreach ($item in $Items) {
+        $size = [long]$item.Size
+        if (-not $item.IsFolder -and [System.IO.Directory]::Exists($Dest)) {
+            $existing = Join-Path $Dest ([System.IO.Path]::GetFileName($item.Path))
+            if ([System.IO.File]::Exists($existing) -and (New-Object System.IO.FileInfo $existing).Length -eq $size) { continue }
+        }
+        $total += $size
+    }
+    return $total
+}
+
+# 転送前に、送り先（と取得用のフォルダ）の空き容量を確かめる（バックグラウンドで呼ぶ）
+# 戻り値: @{ Name; Path; Volume; Free; Required; Short } の配列。Free が -1 なら確認できなかった
+function Test-FtFreeSpace {
+    param(
+        [object[]]$Items,
+        [object[]]$Targets,
+        [string]$StageFolder = '',
+        [switch]$StageReused
+    )
+    $checks = @()
+    if ($StageFolder -and -not $StageReused) {
+        $required = 0L
+        foreach ($item in $Items) { if ($item.Path -like '\\*') { $required += [long]$item.Size } }
+        if ($required -gt 0) { $checks += @{ Name = 'この PC（取得用）'; Path = $StageFolder; Required = $required } }
+    }
+    foreach ($target in $Targets) {
+        $checks += @{ Name = $target.Name; Path = $target.Dest; Required = (Get-FtRequiredBytes -Items $Items -Dest $target.Dest) }
+    }
+    $results = @()
+    foreach ($check in $checks) {
+        $folder = Get-FtExistingFolder $check.Path
+        $free = if ($folder) { [FileTransfer.Native]::GetFreeBytes($folder.TrimEnd('\') + '\') } else { -1L }
+        $results += @{
+            Name     = $check.Name
+            Path     = $check.Path
+            Volume   = [System.IO.Path]::GetPathRoot($check.Path).TrimEnd('\')
+            Free     = $free
+            Required = [long]$check.Required
+            Short    = ($free -ge 0 -and $free -lt $check.Required)
+        }
+    }
+    return , $results
+}
+
+# 「SV-APP02（\\SV-APP02\C$）：空き 1.20 GB ／ 必要 3.50 GB」
+function Format-FtFreeSpace {
+    param([hashtable]$Result)
+    $free = if ($Result.Free -ge 0) { [FileTransfer.FileItem]::FormatSize($Result.Free) } else { '不明' }
+    return '{0}（{1}）：空き {2} ／ 必要 {3}' -f $Result.Name, $Result.Volume, $free, [FileTransfer.FileItem]::FormatSize($Result.Required)
+}
+
+Export-ModuleMember -Function Get-FtExistingFolder, Get-FtRequiredBytes, Test-FtFreeSpace, Format-FtFreeSpace, New-FtSync, Get-FtStageFolder, Get-FtStageRoot, Remove-FtStageFolder, New-FtDistribution, Step-FtDistribution, Stop-FtDistribution, Read-FtDistributionLog, Get-FtDistributionProgress, Get-FtDistributionSummary

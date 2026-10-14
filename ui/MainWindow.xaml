@@ -145,6 +145,8 @@
       <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="4,0,0,0">
         <Button x:Name="OpenLink" Style="{StaticResource LinkButton}" Content="開く" ToolTip="エクスプローラーで送り先を開く"/>
         <Button x:Name="RdpLink" Style="{StaticResource LinkButton}" Content="RDP" ToolTip="リモートデスクトップで接続"/>
+        <Button x:Name="DisconnectLink" Style="{StaticResource LinkButton}" Content="切断して再試行"
+                ToolTip="この PC からそのサーバーへの接続（ネットワーク ドライブなど）を切断して、接続し直す"/>
         <Button x:Name="LogonLink" Style="{StaticResource LinkButton}" Content="ログオン…"/>
         <Button x:Name="DetailLink" Style="{StaticResource LinkButton}" Content="詳細"/>
       </StackPanel>
