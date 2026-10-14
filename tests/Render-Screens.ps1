@@ -84,8 +84,11 @@ function Set-Destination {
     $ui.DestBox.Text = $Destination
     Update-FtDestination -Immediate
     if ($null -ne $Folder) { $ui.FolderBox.Text = $Folder; Update-FtFolder }
-    Wait-Until { $script:Check.Status -ne 'checking' } -What 'host check'
+    if ($script:CheckTimer.IsEnabled) { $script:CheckTimer.Stop(); Invoke-FtHostCheck }
+    Wait-Until { @($script:Checks.Values | Where-Object { $_.Status -eq 'checking' }).Count -eq 0 } -What 'host check'
 }
+
+$thisHost = $env:COMPUTERNAME.ToUpperInvariant()
 
 # テスト用のファイル
 $src = Join-Path $WorkDir 'src'
@@ -114,7 +117,7 @@ Assert-True ($script:Items.Count -eq 4) 'four items added'
 Assert-True ($ui.CountText.Text -like '4 件・*') "count text ($($ui.CountText.Text))"
 $serverFolder = Join-Path $WorkDir 'server\{datetime}'   # サーバー上のパスとして C:\... を書く（→ \\<このPC>\C$\...）
 Set-Destination $env:COMPUTERNAME $serverFolder
-Assert-True ($script:Check.Status -eq 'ok') "host check is ok ($($script:Check.Status))"
+Assert-True ((Get-FtCheck $thisHost).Status -eq 'ok') "host check is ok ($((Get-FtCheck $thisHost).Status))"
 Assert-True ($ui.HintText.Text -like "→ \\$($env:COMPUTERNAME)\C$\*") "hint shows the UNC path ($($ui.HintText.Text))"
 Assert-True $ui.StartButton.IsEnabled 'start is enabled'
 Save-Screen $window '02-server-ready'
@@ -128,7 +131,7 @@ Save-Screen $window '03-duplicate-notice'
 Write-Host '04 running, then cancel'
 Set-Destination (Get-FtLocalLabel) (Join-Path $WorkDir 'local\{datetime}')
 Start-FtTransfer
-Wait-Until { $script:Run.Sync.BytesDone -gt 0 } -What 'progress' -TimeoutMs 20000
+Wait-Until { $script:Run.Dist.Hosts[0].Sync.BytesDone -gt 0 } -What 'progress' -TimeoutMs 20000
 Wait-Ui 300
 Assert-True ($script:Phase -eq 'running') 'phase is running'
 Assert-True ($ui.ProgressPanel.Visibility -eq 'Visible' -and $ui.StartButton.Visibility -eq 'Collapsed') 'progress replaces the start button'
@@ -143,8 +146,9 @@ Set-Destination $env:COMPUTERNAME $serverFolder
 Start-FtTransfer
 Wait-Until { $script:Phase -ne 'running' } -What 'transfer' -TimeoutMs 120000
 Assert-True ($script:Phase -eq 'done') "server transfer done ($($script:Phase); $($ui.ResultText.Text))"
-$dest = $script:Run.Dest
+$dest = $script:Run.Dist.Hosts[0].Dest
 Assert-True ($dest -like "\\$($env:COMPUTERNAME)\C$\*") "destination is the admin share ($dest)"
+Assert-True ($null -eq $script:Run.Dist.Stage) 'one server: shared files are relayed without staging'
 Assert-True (Test-Path -LiteralPath (Join-Path $dest 'KB5031234-x64.msu')) 'big file arrived'
 Assert-True (Test-Path -LiteralPath (Join-Path $dest '設定_20261015.zip')) 'Japanese file name arrived'
 Assert-True (Test-Path -LiteralPath (Join-Path $dest 'modules\sub\b.dll')) 'folder arrived'
@@ -175,7 +179,7 @@ Save-Screen $window '07-error'
 
 Write-Host '08 server needs logon (simulated status)'
 Set-Destination $env:COMPUTERNAME 'C:\Work\{datetime}'
-$script:Check.Status = 'auth'
+$script:Checks[$thisHost].Status = 'auth'
 Update-FtView
 Assert-True ($ui.HintText.Text -like '*ログオンが必要です*') 'logon hint'
 Save-Screen $window '08-needs-logon'
@@ -208,6 +212,76 @@ $d.MessageText.Text = $script:LastError.Detail
 $d.LogBox.Text = $script:RunLog -join "`r`n"
 Show-Offscreen $dialog
 Save-Screen $dialog '11-details-dialog'
+$dialog.Close()
+
+# ---- 複数台（このPC 自身に、名前と 127.0.0.1 の 2 通りで届くことを使う）----
+$uncSrc = '\\127.0.0.1\C$' + $src.Substring(2)
+$multiHosts = "$thisHost, 127.0.0.1"
+$multiFolder = Join-Path $WorkDir 'multi\{host}\{datetime}'
+
+Write-Host '12 two servers ready'
+Remove-FtItems @($script:Items)
+Add-FtPaths @("$uncSrc\patches\setup_v2.4.1.exe", "$src\other\設定_20261015.zip", "$src\modules")
+Wait-Until { $script:PendingSizes -eq 0 } -What 'folder size'
+Set-Destination $multiHosts $multiFolder
+Assert-True ($script:Checks.Count -eq 2 -and @($script:Checks.Values | Where-Object { $_.Status -eq 'ok' }).Count -eq 2) 'both servers checked'
+Assert-True ($ui.HintText.Text -like '*ほか 1 台*') "hint shows the second server ($($ui.HintText.Text))"
+Assert-True $ui.StartButton.IsEnabled 'start enabled for two servers'
+Save-Screen $window '12-multi-ready'
+
+Write-Host '13 two servers done (shared file staged once)'
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'multi transfer' -TimeoutMs 120000
+Assert-True ($script:Phase -eq 'done') "multi transfer done ($($script:Phase); $($ui.ResultText.Text))"
+Assert-True ($ui.ResultText.Text -like '*2 台に転送しました*') "multi result text ($($ui.ResultText.Text))"
+$multiDests = @($script:Run.Dist.Hosts | ForEach-Object { $_.Dest })
+Assert-True (@($multiDests | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'modules\sub\b.dll') }).Count -eq 2) 'both servers received the folder'
+Assert-True (@($multiDests | Where-Object { Test-Path -LiteralPath (Join-Path $_ 'setup_v2.4.1.exe') }).Count -eq 2) 'both servers received the shared file'
+Assert-True ($null -ne $script:Run.Dist.Stage -and $script:Run.Stage.Temporary) 'shared file was staged in a temporary folder'
+Assert-True (-not (Test-Path -LiteralPath $script:Run.Stage.Folder)) 'temporary staging folder removed after success'
+$history = Get-Content -LiteralPath $env:FILETRANSFER_CONFIG -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True (@($history.history.destinations)[0] -eq "$thisHost, 127.0.0.1") "multi destination saved as one history entry ($(@($history.history.destinations)[0]))"
+Save-Screen $window '13-multi-done'
+
+Write-Host '14 one of two servers fails, then retry only that one'
+$deniedMulti = Join-Path $WorkDir 'multi2\127.0.0.1'
+New-Item -ItemType Directory -Path $deniedMulti -Force | Out-Null
+$acl = Get-Acl -LiteralPath $deniedMulti
+$acl.AddAccessRule($denyRule)
+Set-Acl -LiteralPath $deniedMulti -AclObject $acl
+$script:Config.transfer.retryCount = 0
+Set-Destination $multiHosts (Join-Path $WorkDir 'multi2\{host}\{datetime}')
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'partial transfer' -TimeoutMs 120000
+Assert-True ($script:Phase -eq 'error') "partial failure is an error ($($script:Phase))"
+Assert-True ($ui.ResultText.Text -like '127.0.0.1*ほか 1 台は完了*') "partial result text ($($ui.ResultText.Text))"
+Assert-True ($ui.LogonLink.Visibility -eq 'Visible' -and $script:LogonTarget -eq '127.0.0.1') 'logon link points at the failed server'
+Assert-True ($script:LastError.Detail -like "*$($thisHost): 完了*" -and $script:LastError.Detail -like '*127.0.0.1: *アクセスが拒否*') 'details list every server'
+Assert-True (Test-Path -LiteralPath $script:Run.Stage.Folder) 'staged copy is kept for the retry'
+Save-Screen $window '14-multi-partial'
+$firstStage = $script:Run.Stage.Folder
+$acl = Get-Acl -LiteralPath $deniedMulti
+[void]$acl.RemoveAccessRule($denyRule)
+Set-Acl -LiteralPath $deniedMulti -AclObject $acl
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'retry' -TimeoutMs 120000
+Assert-True ($script:Phase -eq 'done') "retry succeeded ($($script:Phase); $($ui.ResultText.Text))"
+Assert-True ($script:Run.Dist.Hosts.Count -eq 1 -and $script:Run.Dist.Hosts[0].Name -eq '127.0.0.1') 'retry sent only to the failed server'
+Assert-True ($script:Run.Stage.Folder -eq $firstStage -and $script:Run.Dist.Stage.Reused) 'retry reused the staged copy and the same timestamp'
+Assert-True ($script:RunLog[0] -like '再送開始*') 'log says it was a retry'
+Assert-True (-not (Test-Path -LiteralPath $firstStage)) 'staging folder removed after the retry succeeded'
+
+Write-Host '15 logon dialog for several servers'
+$dialog = Read-FtXaml 'LogonDialog.xaml'
+$d = Get-FtNamedElements $dialog @('Heading', 'UserBox', 'UserPlaceholder', 'PassBox', 'ApplyOthersBox', 'ApplyOthersText')
+$d.Heading.Text = 'SV-APP01 にログオン'
+$d.UserBox.Text = 'SV-APP01\Administrator'
+$d.UserPlaceholder.Visibility = 'Collapsed'
+$d.PassBox.Password = 'password'
+$d.ApplyOthersText.Text = 'ログオンが必要なほかの 2 台（SV-APP02、SV-APP03）にも、同じアカウントで接続する'
+$d.ApplyOthersBox.Visibility = 'Visible'
+Show-Offscreen $dialog
+Save-Screen $dialog '15-logon-multi'
 $dialog.Close()
 
 $window.Close()

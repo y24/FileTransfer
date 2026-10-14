@@ -34,6 +34,42 @@ Python などのインストールは不要で、Windows 10 / 11 標準の Power
 - ローカルアカウントは `ホスト名\ユーザー名`、AD アカウントは `ドメイン\ユーザー名` でログオンします。「資格情報を保存する」にすると Windows の資格情報マネージャーに保存され、次回から入力不要になります
 - Ctrl+Enter で転送開始、Delete で選んだファイルを一覧から外せます
 
+### 複数のサーバーに配る
+
+送り先にホスト名をカンマ区切りで書くと、同じファイルを全台に配ります（例: `SV-APP01, SV-APP02, SV-APP03`）。
+
+- 共有フォルダのファイルは、先にこの PC へ 1 回だけ取得してから、最大 3 台ずつ並列に送ります（取得したものは終わったら消します）
+- フォルダの `{datetime}` は全台で同じ日時になります。`{host}` を使うと台ごとに変えられます（例: `\\{host}\Deploy$\{date}`）
+- 一部の台だけ失敗したら、［転送開始］を押し直すと失敗した台にだけ送り直します
+- ログオンが必要な台が複数あるときは、1 台目でログオンするときに「ほかの台にも同じアカウントで接続する」を選べます（`SV-APP01\Administrator` は台ごとに `SV-APP02\Administrator` のように読み替えます）
+- 台の組み合わせは 1 件の履歴として残るので、2 回目からは ▾ で選ぶだけです
+
+## コマンドラインから使う
+
+`FileTransfer.bat`（インストール先は `%LOCALAPPDATA%\Programs\FileTransfer`）に引数を付けると、画面を出さずに転送します。バッチファイルやタスク スケジューラから呼べます。
+
+```bash
+FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\Work\{datetime} \\fs01\patches\2026-10\*.msu
+```
+
+```bash
+FileTransfer.bat -Destination このPC -Folder D:\Transfer\{date} \\fs01\release\app\setup.exe
+```
+
+| 引数 | 内容 |
+|------|------|
+| `-Destination` | 送り先。ホスト名（カンマ区切りで複数可）または `このPC` |
+| `-Folder` | 送り先のフォルダ（画面のフォルダ欄と同じ書き方） |
+| 送るファイル | 末尾に並べる（`*` `?` 可、スペースを含むときは `"` で囲む） |
+| `-Credential <ユーザー名>` | ログオンが必要なサーバーに、このアカウントで接続する（パスワードは起動時に聞かれる） |
+| `-SaveCredential` | そのアカウントを資格情報マネージャーに保存する |
+| `-KeepLocalCopy` | 共有のファイルを、この PC にもコピーして残す |
+| `-WhatIf` | 送り先と robocopy のコマンドを表示するだけで、転送しない |
+
+- 終了コード: `0` 成功 / `1` 転送に失敗（一部の台だけ失敗した場合も含む）/ `2` 指定の誤り・接続できない・ログオンが必要
+- 転送を始める前に全台の接続を確認し、1 台でも問題があればどこにも送らずに終わります（終了コード 2）
+- 画面で保存した資格情報がそのまま使われます。ログは画面からの転送と同じファイルに残ります
+
 ## サーバー側の前提
 
 - クライアント PC からサーバーのファイル共有（TCP 445）に接続できること
@@ -60,7 +96,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\Run-Tests.ps1
 powershell -NoProfile -STA -ExecutionPolicy Bypass -File tests\Render-Screens.ps1 -OutDir screens
 ```
 
-- `Run-Tests.ps1`: パス解決、実行計画、robocopy の出力解析、実際のローカル転送、中止などの自動テスト
-- `Render-Screens.ps1`: アプリを画面外に表示して操作し、各状態の画面を PNG に保存します（自分自身の管理共有を使ったサーバー転送も行います）
+- `Run-Tests.ps1`: パス解決、実行計画、robocopy の出力解析、実際の転送、複数台への配布、中止、コマンドライン実行などの自動テスト
+- `Render-Screens.ps1`: アプリを画面外に表示して操作し、各状態の画面を PNG に保存します（自分自身の管理共有を `PC名` と `127.0.0.1` の 2 台に見立てた配布も行います）
 - `.ps1` / `.psm1` は **BOM 付き UTF-8** で保存してください（Windows PowerShell 5.1 は BOM なしの UTF-8 を Shift-JIS として読みます）。`.cs` と `.bat` は ASCII のみにしてください
 - 設計書: [docs/design.md](docs/design.md)、UI モック: [docs/ui-mock.html](docs/ui-mock.html)

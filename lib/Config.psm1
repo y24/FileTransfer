@@ -25,6 +25,7 @@ function Get-FtBuiltinConfig {
             retryWaitSec          = 3
             unbufferedThresholdMB = 256
             threadsForFolders     = 8
+            parallelHosts         = 3
             keepLocalCopy         = $false
             localCopyFolder       = "$downloads\Transfer\{datetime}"
         }

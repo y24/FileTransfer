@@ -18,9 +18,10 @@ New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
 if (-not ('FileTransfer.Native' -as [type])) {
     Add-Type -Path (Join-Path $root 'lib\Native.cs'), (Join-Path $root 'lib\Models.cs')
 }
-foreach ($name in 'Config', 'PathResolver', 'Connection', 'TransferEngine', 'Log') {
-    Import-Module (Join-Path $root "lib\$name.psm1") -Force -DisableNameChecking
-}
+$modulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'Distribution', 'Log', 'Cli') | ForEach-Object { Join-Path $root "lib\$_.psm1" }
+foreach ($modulePath in $modulePaths) { Import-Module $modulePath -Force -DisableNameChecking }
+# 自分自身の管理共有（\\127.0.0.1\C$）経由で読めるときは、UNC のコピー元として使う
+$uncWorkDir = if ($WorkDir -match '^[Cc]:\\' -and [FileTransfer.Native]::GetPathError('\\127.0.0.1\C$\') -eq 0) { '\\127.0.0.1\C$' + $WorkDir.Substring(2) } else { $null }
 
 $script:Passed = 0
 $script:Failed = 0
@@ -84,6 +85,22 @@ Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\Wo
 Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder 'Work').Error) 'relative path'
 Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\Work\{now:HH:mm}' -Now $now).Error) 'template that produces a colon'
 Assert-True ([bool](Resolve-FtDestination -Destination 'このPC' -Folder 'Transfer').Error) 'local relative path'
+
+Section 'Multiple destinations'
+Assert-Equal 'SV-APP01|sv-app02|SV-DB02' ((Split-FtDestinations 'SV-APP01, sv-app02;SV-DB02  sv-app01') -join '|') 'split by comma, semicolon, space; duplicates removed'
+Assert-Equal 'このPC' ((Split-FtDestinations 'この PC') -join '|') 'この PC with a space'
+Assert-Equal 'SV-APP01, SV-APP02' (Format-FtDestinations @('sv-app01', 'SV-APP02')) 'format'
+$r = Resolve-FtDestinations -Destination 'SV-APP01, SV-APP02' -Folder 'C:\Work\{datetime}' -Now $now
+Assert-Equal '\\SV-APP01\C$\Work\20261015_1432|\\SV-APP02\C$\Work\20261015_1432' (($r.Targets | ForEach-Object { $_.Path }) -join '|') 'one path per server, same timestamp'
+Assert-True ($r.IsMulti -and -not $r.IsLocal -and -not $r.Error) 'multi flags'
+$r = Resolve-FtDestinations -Destination 'SV-APP01,SV-APP02' -Folder '\\{host}\Deploy$\{date}' -Now $now
+Assert-Equal '\\SV-APP01\Deploy$\20261015|\\SV-APP02\Deploy$\20261015' (($r.Targets | ForEach-Object { $_.Path }) -join '|') 'UNC with {host} differs per server'
+Assert-True ([bool](Resolve-FtDestinations -Destination 'SV-APP01,SV-APP02' -Folder '\\fs01\work\x').Error) 'same UNC for every server is an error'
+Assert-True ((Resolve-FtDestinations -Destination 'このPC, SV-APP01' -Folder 'C:\Work').Error -like '*このPC*') 'this PC and servers cannot be mixed'
+Assert-True ((Resolve-FtDestinations -Destination 'SV-APP01, SV_APP 02!' -Folder 'C:\Work').Error -like '*02!*') 'invalid host name is named'
+$r = Resolve-FtDestinations -Destination 'このPC' -Folder 'D:\Transfer\{date}' -Now $now
+Assert-True ($r.IsLocal -and $r.Targets.Count -eq 1 -and $r.Targets[0].Path -eq 'D:\Transfer\20261015') 'single local destination'
+Assert-True ([bool](Resolve-FtDestinations -Destination '' -Folder 'C:\Work').Error) 'empty destination'
 
 Section 'Config'
 Assert-Equal 'b|a|c' ((Add-FtHistory @('a', 'B', 'c') 'b') -join '|') 'history moves an existing item to the top (case-insensitive)'
@@ -161,6 +178,16 @@ Assert-True (-not $staged[0].Final -and $staged[0].Dest -eq 'D:\Transfer\x' -and
 Assert-True ($staged[1].Final -and $staged[1].Source -eq 'D:\Transfer\x' -and ($staged[1].Files -join '|') -eq 'KB1.msu|KB2.msu') 'final step reads from the local copy'
 Assert-Equal 'C:\Users\u\Downloads' $staged[2].Source 'local files are not staged'
 Assert-True ($staged[1].Items -contains '\\fs01\patches\KB1.msu') 'final step still reports the original items'
+$stageOnly = New-FtTransferPlan -Items $items -StageFolder 'D:\Transfer\x' -StageOnly
+Assert-True ($stageOnly.Count -eq 1 -and -not $stageOnly[0].Final) '-StageOnly makes only the staging step'
+$fromStage = New-FtTransferPlan -Items $items -Destination '\\SV\C$\Work\x' -StageFolder 'D:\Transfer\x' -FromStage
+Assert-True ($fromStage.Count -eq 3 -and $fromStage[0].Source -eq 'D:\Transfer\x' -and $fromStage[0].Final) '-FromStage reads shared files from the local copy'
+Assert-True ($null -eq (Get-FtStageFolder -Items $items -TargetCount 1 -IsLocal $false -KeepLocalCopy $false -LocalCopyFolder 'x' -Now $now)) 'one server: no staging'
+$stageInfo = Get-FtStageFolder -Items $items -TargetCount 2 -IsLocal $false -KeepLocalCopy $false -LocalCopyFolder 'x' -Now $now
+Assert-True ($stageInfo.Temporary -and $stageInfo.Folder -like '*\FileTransfer\stage_20261015_143210') 'two servers: temporary staging'
+$stageInfo = Get-FtStageFolder -Items $items -TargetCount 1 -IsLocal $false -KeepLocalCopy $true -LocalCopyFolder 'D:\Transfer\{date}' -Now $now
+Assert-True (-not $stageInfo.Temporary -and $stageInfo.Folder -eq 'D:\Transfer\20261015') 'keepLocalCopy: kept staging folder'
+Assert-True ($null -eq (Get-FtStageFolder -Items @($items[1]) -TargetCount 3 -IsLocal $false -KeepLocalCopy $false -LocalCopyFolder 'x' -Now $now)) 'no shared files: no staging'
 
 Section 'Error messages'
 Assert-True ((Get-FtErrorInfo -Code 5 -Target 'SV-WEB01' -Server).Short -like 'SV-WEB01*') 'access denied'
@@ -177,6 +204,10 @@ Assert-Equal 'auth' (Get-FtAccessStatus 5) 'access denied'
 Assert-Equal 'unreachable' (Get-FtAccessStatus 53) 'bad net path'
 Assert-Equal 'noshare' (Get-FtAccessStatus 67) 'bad net name'
 Assert-Equal 'conflict' (Get-FtAccessStatus 1219) 'credential conflict'
+Assert-Equal 'SV-APP02\Administrator' (Convert-FtUserForHost 'SV-APP01\Administrator' 'SV-APP01' 'SV-APP02') 'local account follows the server name'
+Assert-Equal 'SV-APP02\Administrator' (Convert-FtUserForHost '.\Administrator' 'SV-APP01' 'SV-APP02') '.\ local account'
+Assert-Equal 'CORP\yamada' (Convert-FtUserForHost 'CORP\yamada' 'SV-APP01' 'SV-APP02') 'domain account is unchanged'
+Assert-Equal 'yamada@corp.example' (Convert-FtUserForHost 'yamada@corp.example' 'SV-APP01' 'SV-APP02') 'UPN is unchanged'
 $watch = [Diagnostics.Stopwatch]::StartNew()
 $access = Test-FtShareAccess '\\ft-nonexistent-host.invalid\C$' -TimeoutMs 1500
 Assert-Equal 'unreachable' $access.Status 'unknown host is unreachable'
@@ -269,6 +300,139 @@ if ($null -ne $sync.Result -and $sync.Result.Status -eq 'success') {
     Assert-Equal 'canceled' $sync.Result.Status 'cancel while copying'
     Assert-True ($progressSeen -gt 0) "progress was reported before cancel ($progressSeen bytes)"
 }
+
+Section 'Distribution (two destinations, staging, partial failure)'
+$sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+$sessionState.ExecutionPolicy = [Microsoft.PowerShell.ExecutionPolicy]::Bypass
+$sessionState.ImportPSModule([string[]]$modulePaths)
+$pool = [runspacefactory]::CreateRunspacePool(1, 4, $sessionState, $Host)
+$pool.Open()
+function Wait-Distribution {
+    param([hashtable]$Distribution, [int]$TimeoutMs = 60000)
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while ($Distribution.Status -eq 'running') {
+        if ($watch.ElapsedMilliseconds -gt $TimeoutMs) { throw 'distribution timed out' }
+        Step-FtDistribution $Distribution
+        Start-Sleep -Milliseconds 100
+    }
+}
+$sharedSrc = if ($uncWorkDir) { "$uncWorkDir\src" } else { $src }
+if (-not $uncWorkDir) { Write-Host '    (info) \\127.0.0.1\C$ is not available; staging uses a local source' -ForegroundColor Yellow }
+$distItems = @(
+    @{ Path = "$sharedSrc\日本語ファイル.txt"; IsFolder = $false; Size = 5 },
+    @{ Path = "$src\folder"; IsFolder = $true; Size = 3 }
+)
+$stageFolder = Join-Path (Get-FtStageRoot) ('stage_test_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$distTargets = @(
+    @{ Name = 'A'; HostName = 'A'; IsLocal = $true; Dest = "$WorkDir\dist\A" },
+    @{ Name = 'B'; HostName = 'B'; IsLocal = $true; Dest = "$WorkDir\dist\B" }
+)
+$distribution = New-FtDistribution -Items $distItems -Targets $distTargets -StageFolder $stageFolder -Options @{ ParallelHosts = 2 } -Pool $pool
+Assert-True ($null -ne $distribution.Stage -eq [bool]$uncWorkDir) 'staging only when there are shared (UNC) files'
+Wait-Distribution $distribution
+$summary = Get-FtDistributionSummary $distribution
+Assert-Equal 'success' $summary.Status 'distribution to two destinations'
+Assert-True ((Test-Path -LiteralPath "$WorkDir\dist\A\日本語ファイル.txt") -and (Test-Path -LiteralPath "$WorkDir\dist\B\folder\sub\b.txt")) 'both destinations received the files'
+if ($uncWorkDir) { Assert-True (Test-Path -LiteralPath "$stageFolder\日本語ファイル.txt") 'shared file was staged once' }
+$progress = Get-FtDistributionProgress $distribution
+Assert-True (@($progress.Items.Values | Where-Object { $_.State -ne 'done' }).Count -eq 0) 'all rows done'
+Assert-Equal $progress.BytesTotal $progress.BytesDone 'distribution progress reaches 100%'
+$distLog = Read-FtDistributionLog $distribution
+Assert-True (@($distLog | Where-Object { $_ -like '`[A`] robocopy*' }).Count -gt 0 -and @($distLog | Where-Object { $_ -like '`[B`] robocopy*' }).Count -gt 0) 'log lines are prefixed with the destination'
+
+$reused = New-FtDistribution -Items $distItems -Targets @($distTargets[1]) -StageFolder $stageFolder -ReuseStage -Pool $pool
+if ($uncWorkDir) { Assert-True ($reused.Stage.Status -eq 'success' -and $reused.Stage.Reused) 'retry reuses the staged copy' }
+Remove-FtStageFolder $stageFolder
+Assert-True (-not (Test-Path -LiteralPath $stageFolder)) 'temporary staging folder removed'
+New-Item -ItemType Directory -Path "$WorkDir\stage_keep" -Force | Out-Null
+Remove-FtStageFolder "$WorkDir\stage_keep"
+Assert-True (Test-Path -LiteralPath "$WorkDir\stage_keep") 'folders outside the staging root are never removed'
+
+# B だけ書き込みを拒否して、一部だけ失敗させる
+$deniedRoot = Join-Path $WorkDir 'dist2\B'
+New-Item -ItemType Directory -Path $deniedRoot -Force | Out-Null
+$acl = Get-Acl -LiteralPath $deniedRoot
+$denyRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    [System.Security.Principal.WindowsIdentity]::GetCurrent().Name, 'CreateFiles, CreateDirectories', 'ContainerInherit, ObjectInherit', 'None', 'Deny')
+$acl.AddAccessRule($denyRule)
+Set-Acl -LiteralPath $deniedRoot -AclObject $acl
+$partialTargets = @(
+    @{ Name = 'A'; HostName = 'A'; IsLocal = $true; Dest = "$WorkDir\dist2\A\x" },
+    @{ Name = 'B'; HostName = 'B'; IsLocal = $true; Dest = "$deniedRoot\x" }
+)
+$distribution = New-FtDistribution -Items @($distItems[1]) -Targets $partialTargets -Options @{ ParallelHosts = 2; RetryCount = 0; RetryWaitSec = 0 } -Pool $pool
+Wait-Distribution $distribution
+$summary = Get-FtDistributionSummary $distribution
+Assert-Equal 'partial|B|5' ('{0}|{1}|{2}' -f $summary.Status, $summary.Failed[0].Name, $summary.Failed[0].Result.Code) 'one destination fails with access denied'
+$acl = Get-Acl -LiteralPath $deniedRoot
+[void]$acl.RemoveAccessRule($denyRule)
+Set-Acl -LiteralPath $deniedRoot -AclObject $acl
+
+$distribution = New-FtDistribution -Items @($distItems[1]) -Targets $distTargets -Options @{ ParallelHosts = 1 } -Pool $pool
+Stop-FtDistribution $distribution
+Assert-Equal 'canceled' (Get-FtDistributionSummary $distribution).Status 'cancel before any destination starts'
+$pool.Close()
+
+Section 'Command line'
+$ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$mainScript = Join-Path $root 'FileTransfer.ps1'
+function Invoke-Cli {
+    param([string[]]$Arguments)
+    $output = & $ps51 -NoProfile -ExecutionPolicy Bypass -File $mainScript @Arguments 2>&1 | Out-String
+    return @{ Code = $LASTEXITCODE; Output = $output }
+}
+$cli = Invoke-Cli @('-Destination', 'このPC')
+Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*使い方*') "missing arguments show usage (exit $($cli.Code))"
+$cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli0", "$WorkDir\no-such-file.txt")
+Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*見つかりません*') "missing source (exit $($cli.Code))"
+$cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli0", "$src\日本語ファイル.txt", '-Bogus')
+Assert-True ($cli.Code -eq 2) "unknown option (exit $($cli.Code))"
+$cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli1\{date}", "$src\日本語ファイル.txt", "$src\folder")
+$today = (Get-Date).ToString('yyyyMMdd')
+Assert-True ($cli.Code -eq 0 -and (Test-Path -LiteralPath "$WorkDir\cli1\$today\日本語ファイル.txt") -and (Test-Path -LiteralPath "$WorkDir\cli1\$today\folder\sub\b.txt")) "copy to this PC (exit $($cli.Code))"
+$cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli2", "$src\*.txt")
+Assert-True ($cli.Code -eq 0 -and (Test-Path -LiteralPath "$WorkDir\cli2\日本語ファイル.txt")) "wildcard source (exit $($cli.Code))"
+$cli = Invoke-Cli @('-Destination', 'このPC', '-Folder', "$WorkDir\cli3", "$src\日本語ファイル.txt", '-WhatIf')
+Assert-True ($cli.Code -eq 0 -and -not (Test-Path -LiteralPath "$WorkDir\cli3") -and $cli.Output -like '*robocopy*') "-WhatIf only shows the plan (exit $($cli.Code))"
+$cli = Invoke-Cli @('-Destination', 'ft-nonexistent-host.invalid', '-Folder', 'C:\Work', "$src\日本語ファイル.txt")
+Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*接続できません*') "unreachable server (exit $($cli.Code))"
+$cli = Invoke-Cli @('-Destination', 'ft-nonexistent-host.invalid', '-Folder', 'C:\Work\{date}', "$src\日本語ファイル.txt", '-WhatIf')
+Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*robocopy*' -and $cli.Output -like '*接続できません*') "-WhatIf shows the plan and the connection problem (exit $($cli.Code))"
+if ($uncWorkDir) {
+    $stagesBefore = @(Get-ChildItem -LiteralPath (Get-FtStageRoot) -Directory -Filter 'stage_*' -ErrorAction SilentlyContinue).Count
+    $cli = Invoke-Cli @('-Destination', "$env:COMPUTERNAME,127.0.0.1", '-Folder', "$WorkDir\cli4\{host}", "$uncWorkDir\src\日本語ファイル.txt", "$src\folder")
+    Assert-True ($cli.Code -eq 0) "two servers through admin shares (exit $($cli.Code))`n$($cli.Output)"
+    Assert-True ((Test-Path -LiteralPath "$WorkDir\cli4\$($env:COMPUTERNAME)\日本語ファイル.txt") -and (Test-Path -LiteralPath "$WorkDir\cli4\127.0.0.1\folder\sub\b.txt")) 'both servers received the files'
+    $stagesAfter = @(Get-ChildItem -LiteralPath (Get-FtStageRoot) -Directory -Filter 'stage_*' -ErrorAction SilentlyContinue).Count
+    Assert-Equal $stagesBefore $stagesAfter 'temporary staging folder is removed after the command'
+
+    # Ctrl+C と同じ仕組み（パイプラインの停止）で止めたとき、robocopy を止めて一時フォルダを消すか
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $runspace
+    [void]$ps.AddScript({
+        param($Root, $ModulePaths, $Destination, $Folder, $Source)
+        foreach ($modulePath in $ModulePaths) { Import-Module $modulePath -DisableNameChecking }
+        Invoke-FtCli -Source $Source -Destination $Destination -Folder $Folder -Config (Get-FtConfig -AppRoot $Root) -ModulePaths $ModulePaths
+    }).AddArgument($root).AddArgument([string[]]$modulePaths).AddArgument("$env:COMPUTERNAME,127.0.0.1").AddArgument("$WorkDir\cli6\{host}").AddArgument([string[]]@("$uncWorkDir\src\huge.bin"))
+    $handle = $ps.BeginInvoke()
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while (-not (Get-Process robocopy -ErrorAction SilentlyContinue) -and -not $handle.IsCompleted -and $watch.ElapsedMilliseconds -lt 20000) { Start-Sleep -Milliseconds 50 }
+    $wasCopying = [bool](Get-Process robocopy -ErrorAction SilentlyContinue)
+    $ps.Stop()
+    Start-Sleep -Milliseconds 500
+    $ps.Dispose(); $runspace.Dispose()
+    if ($wasCopying) {
+        Assert-True (-not (Get-Process robocopy -ErrorAction SilentlyContinue)) 'stopping the command line run stops robocopy'
+        Assert-Equal $stagesBefore @(Get-ChildItem -LiteralPath (Get-FtStageRoot) -Directory -Filter 'stage_*' -ErrorAction SilentlyContinue).Count 'stopping removes the temporary staging folder'
+    } else {
+        Write-Host '    (info) copy finished before stop; stop path not exercised' -ForegroundColor Yellow
+    }
+}
+$bat = Join-Path $root 'FileTransfer.bat'
+$output = & cmd.exe /c "`"$bat`" -Destination このPC -Folder `"$WorkDir\cli5`" `"$src\日本語ファイル.txt`"" 2>&1 | Out-String
+Assert-True ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath "$WorkDir\cli5\日本語ファイル.txt")) "FileTransfer.bat passes arguments to the command line mode (exit $LASTEXITCODE)"
 
 Remove-Item -LiteralPath $WorkDir -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''

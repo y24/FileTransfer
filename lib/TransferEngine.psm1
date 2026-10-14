@@ -94,13 +94,17 @@ function Add-FtSteps {
 
 # 送るファイル（@{ Path; IsFolder; Size }）から実行計画を作る
 # StageFolder を指定すると、UNC（共有・サーバー）にあるものを先にそこへコピーしてから送る
+#   -StageOnly: StageFolder へのコピーだけ（複数の送り先に配るとき、最初に 1 回だけ実行する）
+#   -FromStage: StageFolder にコピー済みのものを送り先へ送る部分だけ
 function New-FtTransferPlan {
     param(
         [object[]]$Items,
-        [string]$Destination,
+        [string]$Destination = '',
         [string]$StageFolder = '',
         [long]$LargeThresholdBytes = 256MB,
-        [int]$MaxArgumentLength = 28000
+        [int]$MaxArgumentLength = 28000,
+        [switch]$StageOnly,
+        [switch]$FromStage
     )
     $steps = New-Object System.Collections.Generic.List[object]
     $staged = @{}
@@ -112,10 +116,11 @@ function New-FtTransferPlan {
                 $staged[$item.Path] = $true
             }
         }
-        if ($stageEntries.Count) {
+        if ($stageEntries.Count -and -not $FromStage) {
             Add-FtSteps -Steps $steps -Entries $stageEntries -Destination $StageFolder -Final $false -LargeThresholdBytes $LargeThresholdBytes -MaxArgumentLength $MaxArgumentLength
         }
     }
+    if ($StageOnly) { return , $steps.ToArray() }
     $finalEntries = @()
     foreach ($item in $Items) {
         $parent = if ($staged.ContainsKey($item.Path)) { $StageFolder } else { Get-FtParentPath $item.Path }

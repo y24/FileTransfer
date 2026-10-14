@@ -108,4 +108,40 @@ function Disconnect-FtShare {
     [void][FileTransfer.Native]::CancelConnection($Root, $false)
 }
 
-Export-ModuleMember -Function Get-FtAccessStatus, Test-FtTcpPort, Test-FtShareAccess, Get-FtCurrentUser, Get-FtSavedUser, Get-FtHostAliases, Connect-FtShare, Disconnect-FtShare
+# 別のサーバーに同じアカウントで接続するときのユーザー名
+#   ローカルアカウント（SV-APP01\Administrator、.\Administrator）→ SV-APP02\Administrator
+#   ドメインアカウント（CORP\yamada、yamada@corp.example）→ そのまま
+function Convert-FtUserForHost {
+    param([string]$UserName, [string]$FromHost, [string]$ToHost)
+    $index = $UserName.IndexOf('\')
+    if ($index -gt 0) {
+        $prefix = $UserName.Substring(0, $index)
+        if ($prefix -eq '.' -or $prefix -ieq $FromHost) { return "$ToHost\" + $UserName.Substring($index + 1) }
+    }
+    return $UserName
+}
+
+# 1 台目にログオンし、成功したら残りのサーバーにも同じアカウントで接続する（バックグラウンドで呼ぶ）
+# Targets: @{ HostName; ShareRoot } の配列（先頭がログオンダイアログを開いたサーバー）
+# 戻り値: Connect-FtShare の結果に HostName と UserName を加えたものの配列
+function Connect-FtShareGroup {
+    param(
+        [object[]]$Targets,
+        [string]$UserName,
+        [System.Security.SecureString]$Password,
+        [switch]$Save
+    )
+    $first = $Targets[0].HostName
+    $results = @()
+    foreach ($target in $Targets) {
+        $user = Convert-FtUserForHost -UserName $UserName -FromHost $first -ToHost $target.HostName
+        $result = Connect-FtShare -HostName $target.HostName -ShareRoot $target.ShareRoot -UserName $user -Password $Password -Save:$Save
+        $result.HostName = $target.HostName
+        $result.UserName = $user
+        $results += $result
+        if ($results.Count -eq 1 -and $result.Code -ne 0) { break }
+    }
+    return , $results
+}
+
+Export-ModuleMember -Function Get-FtAccessStatus, Test-FtTcpPort, Test-FtShareAccess, Get-FtCurrentUser, Get-FtSavedUser, Get-FtHostAliases, Connect-FtShare, Disconnect-FtShare, Convert-FtUserForHost, Connect-FtShareGroup

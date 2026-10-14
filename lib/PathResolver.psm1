@@ -130,4 +130,66 @@ function Resolve-FtDestination {
     return $result
 }
 
-Export-ModuleMember -Function Get-FtLocalLabel, Test-FtLocalDestination, Test-FtHostName, Expand-FtTemplate, Get-FtShareRoot, Get-FtUncHost, Resolve-FtDestination
+# 送り先欄の値を送り先ごとに分ける（カンマ・セミコロン・読点・空白区切り、大文字小文字を区別せず重複を除く）
+function Split-FtDestinations {
+    param([string]$Destination)
+    $normalized = "$Destination" -replace 'この\s+PC', 'このPC'
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($name in ($normalized -split '[,;、\s]+')) {
+        if (-not $name) { continue }
+        if (-not ($names | Where-Object { $_ -ieq $name })) { $names.Add($name) }
+    }
+    return , $names.ToArray()
+}
+
+# 送り先欄（複数可）とフォルダ欄から、送り先ごとの実際のパスを求める
+# 戻り値: @{ Targets = Resolve-FtDestination の結果の配列; Names; Error; IsLocal; IsMulti }
+function Resolve-FtDestinations {
+    param(
+        [string]$Destination,
+        [string]$Folder,
+        [datetime]$Now = (Get-Date),
+        [object[]]$Mappings = @(),
+        [hashtable]$HostAlias = @{},
+        [string]$UserName = $env:USERNAME
+    )
+    $names = Split-FtDestinations $Destination
+    $locals = @($names | Where-Object { Test-FtLocalDestination $_ })
+    $result = @{ Targets = @(); Names = $names; Error = $null; IsLocal = ($locals.Count -gt 0); IsMulti = ($names.Count -gt 1) }
+    if ($names.Count -eq 0) {
+        # ホスト名が空のときも、フォルダ欄のチェック結果は返す
+        $empty = Resolve-FtDestination -Destination '' -Folder $Folder -Now $Now -Mappings $Mappings -HostAlias $HostAlias -UserName $UserName
+        $result.Error = $empty.Error
+        return $result
+    }
+    if ($locals.Count -gt 0 -and $names.Count -gt 1) {
+        $result.Error = '「このPC」とサーバーは一緒に指定できません'
+        return $result
+    }
+    $targets = @()
+    foreach ($name in $names) {
+        $target = Resolve-FtDestination -Destination $name -Folder $Folder -Now $Now -Mappings $Mappings -HostAlias $HostAlias -UserName $UserName
+        if ($target.Error) {
+            $result.Error = if ($target.Error -eq 'ホスト名が正しくありません') { "ホスト名が正しくありません: $name" } else { $target.Error }
+            return $result
+        }
+        $targets += $target
+    }
+    if ($targets.Count -gt 1) {
+        $paths = @($targets | ForEach-Object { $_.Path.ToLowerInvariant() } | Select-Object -Unique)
+        if ($paths.Count -lt $targets.Count) {
+            $result.Error = '複数のサーバーに送るときは、フォルダを C:\Work のようなサーバー上のパスで指定してください'
+            return $result
+        }
+    }
+    $result.Targets = $targets
+    return $result
+}
+
+# 送り先欄に書く形（大文字、カンマ区切り）
+function Format-FtDestinations {
+    param([string[]]$Names)
+    return (@($Names | ForEach-Object { if (Test-FtLocalDestination $_) { $script:LocalLabel } else { $_.ToUpperInvariant() } }) -join ', ')
+}
+
+Export-ModuleMember -Function Get-FtLocalLabel, Test-FtLocalDestination, Test-FtHostName, Expand-FtTemplate, Get-FtShareRoot, Get-FtUncHost, Resolve-FtDestination, Split-FtDestinations, Resolve-FtDestinations, Format-FtDestinations

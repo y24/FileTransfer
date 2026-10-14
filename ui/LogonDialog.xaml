@@ -22,6 +22,11 @@
       <TextBlock x:Name="ErrorText" Foreground="{StaticResource ErrorBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
       <CheckBox x:Name="SaveBox" Content="資格情報を保存する" IsChecked="True" Margin="0,12,0,0"
                 ToolTip="Windows の資格情報マネージャーに保存し、次回から入力を省きます"/>
+      <!-- 複数のサーバーに送るとき、ログオンが必要なほかのサーバーにも同じアカウントで接続する -->
+      <CheckBox x:Name="ApplyOthersBox" IsChecked="True" Margin="0,8,0,0" Visibility="Collapsed"
+                ToolTip="ローカルアカウント（ホスト名\ユーザー名）は、ホスト名の部分をそれぞれのサーバー名に置き換えます">
+        <TextBlock x:Name="ApplyOthersText" TextWrapping="Wrap"/>
+      </CheckBox>
     </StackPanel>
     <Border Grid.Row="1" Background="#F3F3F3" BorderBrush="#E3E3E3" BorderThickness="0,1,0,0" Padding="18,10">
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">

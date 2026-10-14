@@ -4,17 +4,55 @@
     FileTransfer - 共有フォルダ・この PC・サーバーの間でファイルを転送する
 
 .DESCRIPTION
-    送るファイルを選び、送り先（「このPC」またはサーバーのホスト名）とフォルダを指定して転送する。
+    送るファイルを選び、送り先（「このPC」またはサーバーのホスト名。カンマ区切りで複数可）とフォルダを指定して転送する。
     転送は robocopy で行い、サーバーへは管理共有（\\HOST\C$ など）に SMB で直接書き込む。
+    引数なしで起動すると画面を表示し、-Destination などを指定するとコマンドラインで転送する。
     設計: docs\design.md
+
+.PARAMETER Destination
+    （コマンドライン）送り先。ホスト名（カンマ区切りで複数可）または このPC
+
+.PARAMETER Folder
+    （コマンドライン）送り先のフォルダ。サーバーなら C:\Work\{datetime} のようにサーバー上のパスで書く
+
+.PARAMETER Source
+    （コマンドライン）送るファイル・フォルダ。* ? も使える。-Source を書かずに末尾に並べてもよい
+
+.PARAMETER Credential
+    （コマンドライン）ログオンが必要なサーバーに、このアカウントで接続する
+
+.PARAMETER SaveCredential
+    （コマンドライン）-Credential のアカウントを Windows 資格情報マネージャーに保存する
+
+.PARAMETER KeepLocalCopy
+    （コマンドライン）共有のファイルを、この PC にもコピーして残す
 
 .PARAMETER NoShow
     画面を表示せずに初期化だけ行う（tests\ から読み込むため）
+
+.EXAMPLE
+    FileTransfer.ps1 -Destination SV-APP01,SV-APP02 -Folder 'C:\Work\{datetime}' \\fs01\patches\2026-10\*.msu
+
+.EXAMPLE
+    FileTransfer.ps1 -Destination このPC -Folder 'D:\Transfer\{date}' \\fs01\release\app\setup.exe -WhatIf
 #>
-param([switch]$NoShow)
+[CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Gui')]
+param(
+    [Parameter(ParameterSetName = 'Cli')][Alias('To')][string]$Destination,
+    [Parameter(ParameterSetName = 'Cli')][string]$Folder,
+    [Parameter(ParameterSetName = 'Cli', Position = 0, ValueFromRemainingArguments)][string[]]$Source,
+    [Parameter(ParameterSetName = 'Cli')][System.Management.Automation.Credential()][pscredential]$Credential,
+    [Parameter(ParameterSetName = 'Cli')][switch]$SaveCredential,
+    [Parameter(ParameterSetName = 'Cli')][switch]$KeepLocalCopy,
+    [Parameter(ParameterSetName = 'Gui')][switch]$NoShow
+)
 
 $ErrorActionPreference = 'Stop'
 $script:AppRoot = $PSScriptRoot
+$script:IsCli = $PSCmdlet.ParameterSetName -eq 'Cli'
+# -WhatIf は「計画を表示するだけ」として扱い、ほかのコマンドには効かせない
+$script:PlanOnly = [bool]$WhatIfPreference
+$WhatIfPreference = $false
 
 # 起動に失敗したらログに残して知らせる（画面表示後の例外は DispatcherUnhandledException で扱う）
 trap {
@@ -25,11 +63,10 @@ trap {
         [System.IO.File]::AppendAllText((Join-Path $logDir 'startup-error.log'), $entry, [System.Text.Encoding]::UTF8)
     } catch { }
     if ($NoShow) { break }
+    if ($script:IsCli) { Write-Host "エラー: $($_.Exception.Message)" -ForegroundColor Red; exit 2 }
     try { [System.Windows.MessageBox]::Show("FileTransfer を起動できませんでした。`n$($_.Exception.Message)", 'FileTransfer', 'OK', 'Error') | Out-Null } catch { }
     exit 1
 }
-
-Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
 
 #region 初期化 ------------------------------------------------------------------
 
@@ -54,6 +91,24 @@ function Import-FtTypes {
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 }
 
+Import-FtTypes
+$script:ModulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'Distribution', 'Log', 'Cli') |
+    ForEach-Object { Join-Path $script:AppRoot "lib\$_.psm1" }
+foreach ($modulePath in $script:ModulePaths) { Import-Module $modulePath -Force -DisableNameChecking }
+
+$script:Config = Get-FtConfig -AppRoot $script:AppRoot
+Remove-FtOldLogs -RetentionDays ([int]$script:Config.log.retentionDays)
+
+# コマンドライン
+if ($script:IsCli) {
+    $code = Invoke-FtCli -Source $Source -Destination $Destination -Folder $Folder -Credential $Credential `
+        -SaveCredential:$SaveCredential -KeepLocalCopy:$KeepLocalCopy -PlanOnly:$script:PlanOnly `
+        -Config $script:Config -ModulePaths $script:ModulePaths
+    exit $code
+}
+
+Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
+
 function Read-FtXaml {
     param([string]$Name)
     $reader = [System.Xml.XmlReader]::Create((Join-Path $script:AppRoot "ui\$Name"))
@@ -67,11 +122,6 @@ function Get-FtNamedElements {
     return $table
 }
 
-Import-FtTypes
-$script:ModulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'Log') |
-    ForEach-Object { Join-Path $script:AppRoot "lib\$_.psm1" }
-foreach ($modulePath in $script:ModulePaths) { Import-Module $modulePath -Force -DisableNameChecking }
-
 # スタイルはアプリケーションのリソースに置き、各ウィンドウの XAML から StaticResource で参照する
 $script:App = [System.Windows.Application]::Current
 if (-not $script:App) {
@@ -84,11 +134,8 @@ $script:App.Resources.MergedDictionaries.Add((Read-FtXaml 'Styles.xaml'))
 $sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 $sessionState.ExecutionPolicy = [Microsoft.PowerShell.ExecutionPolicy]::Bypass
 $sessionState.ImportPSModule([string[]]$script:ModulePaths)
-$script:Pool = [runspacefactory]::CreateRunspacePool(1, 4, $sessionState, $Host)
+$script:Pool = [runspacefactory]::CreateRunspacePool(1, 8, $sessionState, $Host)
 $script:Pool.Open()
-
-$script:Config = Get-FtConfig -AppRoot $script:AppRoot
-Remove-FtOldLogs -RetentionDays ([int]$script:Config.log.retentionDays)
 
 #endregion
 
@@ -96,7 +143,8 @@ Remove-FtOldLogs -RetentionDays ([int]$script:Config.log.retentionDays)
 
 $script:Items = New-Object 'System.Collections.ObjectModel.ObservableCollection[FileTransfer.FileItem]'
 $script:Phase = 'idle'                  # idle | running | done | error
-$script:Check = @{ Status = 'empty'; Code = 0; User = ''; Root = ''; HostName = ''; Seq = 0 }
+$script:Checks = @{}                    # ホスト名 → @{ Status; Code; User; Root }（Status: checking|ok|auth|conflict|unreachable|noshare|error）
+$script:CheckSeq = 0
 $script:DestKind = 'server'             # server | local
 $script:LastFolder = @{
     server = @($script:Config.history.serverFolders)[0]
@@ -108,6 +156,7 @@ $script:Connections = New-Object System.Collections.Generic.List[string]
 $script:Run = $null
 $script:RunLog = New-Object System.Collections.Generic.List[string]
 $script:LastError = $null
+$script:LogonTarget = $null             # 結果の行の［ログオン…］で開くサーバー
 $script:NoticeUntil = [datetime]::MinValue
 $script:PendingSizes = 0
 $script:Suppress = $false
@@ -171,12 +220,68 @@ function Update-FtJobs {
 
 function Get-FtDestText { "$($ui.DestBox.Text)".Trim() }
 function Get-FtFolderText { "$($ui.FolderBox.Text)".Trim() }
-function Get-FtDestKey { (Get-FtDestText) + '|' + (Get-FtFolderText) }
+function Get-FtDestKey { (Format-FtDestinations (Split-FtDestinations (Get-FtDestText))) + '|' + (Get-FtFolderText) }
 
 function Resolve-FtCurrent {
     param([datetime]$Now = (Get-Date))
-    return Resolve-FtDestination -Destination (Get-FtDestText) -Folder (Get-FtFolderText) -Now $Now `
+    return Resolve-FtDestinations -Destination (Get-FtDestText) -Folder (Get-FtFolderText) -Now $Now `
         -Mappings @($script:Config.serverShareMappings) -HostAlias $script:HostAlias
+}
+
+# 接続確認の対象（@{ HostName; Root }）。フォルダ欄が正しくないときも、ホストの確認はしておく
+function Get-FtCheckTargets {
+    param($Resolved = (Resolve-FtCurrent))
+    if ($Resolved.IsLocal) { return @() }
+    if (-not $Resolved.Error -and $Resolved.Targets.Count -gt 0) {
+        return @($Resolved.Targets | ForEach-Object { @{ HostName = $_.HostName; Root = $_.ShareRoot } })
+    }
+    $list = @()
+    foreach ($name in $Resolved.Names) {
+        $hostName = $name.ToUpperInvariant()
+        if (-not (Test-FtHostName $hostName)) { continue }
+        $connectName = if ($script:HostAlias.ContainsKey($hostName)) { $script:HostAlias[$hostName] } else { $hostName }
+        $list += @{ HostName = $hostName; Root = "\\$connectName\C`$" }
+    }
+    return $list
+}
+
+function Get-FtCheck {
+    param([string]$HostName)
+    $check = $script:Checks[$HostName]
+    if ($check) { return $check }
+    return @{ Status = 'checking'; Code = 0; User = ''; Root = '' }
+}
+
+# 状態ごとのホスト名
+function Get-FtCheckGroups {
+    param([object[]]$Targets)
+    $groups = @{ ok = @(); auth = @(); conflict = @(); checking = @(); unreachable = @(); noshare = @(); error = @() }
+    foreach ($target in $Targets) {
+        $status = (Get-FtCheck $target.HostName).Status
+        if (-not $groups.ContainsKey($status)) { $status = 'error' }
+        $groups[$status] += $target.HostName
+    }
+    return $groups
+}
+
+# 「SV-APP01」「SV-APP01 ほか 2 台」
+function Join-FtHostNames {
+    param([string[]]$Names)
+    if ($Names.Count -le 1) { return "$($Names[0])" }
+    return "$($Names[0]) ほか $($Names.Count - 1) 台"
+}
+
+function Get-FtStatusText {
+    param([hashtable]$Check)
+    switch ($Check.Status) {
+        'ok'          { "接続OK：$($Check.User)" }
+        'auth'        { 'ログオンが必要です' }
+        'conflict'    { '別のユーザーで接続中です' }
+        'checking'    { '確認中…' }
+        'unreachable' { '接続できません' }
+        'noshare'     { '共有が見つかりません' }
+        default       { "確認でエラーが発生しました（エラー $($Check.Code)）" }
+    }
 }
 
 # 接続に使われるユーザー: このセッションでログオンした人 > 保存済みの資格情報 > Windows のログオンユーザー
@@ -213,9 +318,15 @@ function Update-FtFolderItems {
     Set-FtComboItems $ui.FolderBox @($script:Config.history[$key])
 }
 
+function Get-FtDestKind {
+    $names = Split-FtDestinations (Get-FtDestText)
+    if ($names.Count -gt 0 -and @($names | Where-Object { -not (Test-FtLocalDestination $_) }).Count -eq 0) { return 'local' }
+    return 'server'
+}
+
 # 送り先の種類（このPC / サーバー）が変わったら、フォルダ欄をその種類で前回使った値に戻す
 function Update-FtDestKind {
-    $kind = if (Test-FtLocalDestination (Get-FtDestText)) { 'local' } else { 'server' }
+    $kind = Get-FtDestKind
     if ($kind -eq $script:DestKind) { return }
     $script:LastFolder[$script:DestKind] = $ui.FolderBox.Text
     $script:DestKind = $kind
@@ -227,43 +338,41 @@ function Update-FtDestKind {
 function Request-FtHostCheck {
     param([switch]$Immediate)
     $script:CheckTimer.Stop()
-    $script:Check.Seq++
-    $resolved = Resolve-FtCurrent
-    if ($resolved.IsLocal) {
-        $script:Check.Status = 'local'
-    } elseif (-not $resolved.HostName -or -not (Test-FtHostName $resolved.HostName)) {
-        $script:Check.Status = 'empty'
-    } else {
-        $script:Check.Status = 'checking'
+    $script:CheckSeq++
+    $targets = Get-FtCheckTargets
+    $script:Checks = @{}
+    foreach ($target in $targets) { $script:Checks[$target.HostName] = @{ Status = 'checking'; Code = 0; User = ''; Root = $target.Root } }
+    if ($targets.Count -gt 0) {
         if ($Immediate) { Invoke-FtHostCheck } else { $script:CheckTimer.Start() }
     }
     Update-FtView
 }
 
+# サーバーごとに並列で確認する
 function Invoke-FtHostCheck {
-    $resolved = Resolve-FtCurrent
-    if ($resolved.IsLocal -or -not $resolved.HostName -or -not (Test-FtHostName $resolved.HostName)) { Update-FtView; return }
-    $connectName = if ($script:HostAlias.ContainsKey($resolved.HostName)) { $script:HostAlias[$resolved.HostName] } else { $resolved.HostName }
-    $root = if ($resolved.ShareRoot) { $resolved.ShareRoot } else { "\\$connectName\C`$" }
-    $seq = ++$script:Check.Seq
-    $script:Check.Status = 'checking'
-    $script:Check.Root = $root
-    $script:Check.HostName = $resolved.HostName
-    Update-FtView
-    Start-FtJob -Script 'param($ShareRoot) Test-FtShareAccess -ShareRoot $ShareRoot' -Parameters @{ ShareRoot = $root } `
-        -Context @{ Seq = $seq; HostName = $resolved.HostName } -OnComplete {
-            param($value, $err, $context)
-            if ($context.Seq -ne $script:Check.Seq) { return }
-            if ($err -or $null -eq $value) {
-                $script:Check.Status = 'error'
-                $script:Check.Code = 0
-            } else {
-                $script:Check.Status = $value.Status
-                $script:Check.Code = $value.Code
+    $targets = Get-FtCheckTargets
+    $seq = ++$script:CheckSeq
+    $script:Checks = @{}
+    foreach ($target in $targets) {
+        $script:Checks[$target.HostName] = @{ Status = 'checking'; Code = 0; User = ''; Root = $target.Root }
+        Start-FtJob -Script 'param($ShareRoot) Test-FtShareAccess -ShareRoot $ShareRoot' -Parameters @{ ShareRoot = $target.Root } `
+            -Context @{ Seq = $seq; HostName = $target.HostName } -OnComplete {
+                param($value, $err, $context)
+                if ($context.Seq -ne $script:CheckSeq) { return }
+                $check = $script:Checks[$context.HostName]
+                if (-not $check) { return }
+                if ($err -or $null -eq $value) {
+                    $check.Status = 'error'
+                    $check.Code = 0
+                } else {
+                    $check.Status = $value.Status
+                    $check.Code = $value.Code
+                }
+                $check.User = Get-FtHostUser $context.HostName
+                Update-FtView
             }
-            $script:Check.User = Get-FtHostUser $context.HostName
-            Update-FtView
-        }
+    }
+    Update-FtView
 }
 
 function Update-FtDestination {
@@ -276,12 +385,12 @@ function Update-FtDestination {
 function Update-FtFolder {
     Exit-FtFinished
     # サーバーで、ドライブや共有が変わったら確認し直す（C:\ → D:\ など）
-    $resolved = Resolve-FtCurrent
-    if (-not $resolved.IsLocal -and $resolved.ShareRoot -and $resolved.ShareRoot -ine $script:Check.Root -and $script:Check.Status -ne 'empty') {
-        Request-FtHostCheck
-    } else {
-        Update-FtView
+    $changed = $false
+    foreach ($target in (Get-FtCheckTargets)) {
+        $check = $script:Checks[$target.HostName]
+        if (-not $check -or $check.Root -ine $target.Root) { $changed = $true }
     }
+    if ($changed) { Request-FtHostCheck } else { Update-FtView }
 }
 
 #endregion
@@ -371,13 +480,16 @@ function Get-FtTotalBytes {
 function Test-FtCanStart {
     if ($script:Phase -eq 'running' -or $script:Items.Count -eq 0 -or $script:PendingSizes -gt 0) { return $false }
     $resolved = Resolve-FtCurrent
-    if ($resolved.Error) { return $false }
+    if ($resolved.Error -or $resolved.Targets.Count -eq 0) { return $false }
     if ($resolved.IsLocal) { return $true }
-    return $script:Check.Status -in 'ok', 'auth', 'conflict', 'error'
+    foreach ($target in $resolved.Targets) {
+        if ((Get-FtCheck $target.HostName).Status -notin 'ok', 'auth', 'conflict', 'error') { return $false }
+    }
+    return $true
 }
 
 function Set-FtHint {
-    param([string]$Kind, [string]$Text, [switch]$WithLogon)
+    param([string]$Kind, [string]$Text, [switch]$WithLogon, [int]$More = 0, [string]$ToolTip = '')
     $hint = $ui.HintText
     $hint.Inlines.Clear()
     $hint.ToolTip = $null
@@ -388,40 +500,51 @@ function Set-FtHint {
         $run.FontFamily = Get-FtBrush 'MonoFont'
         $run.Foreground = Get-FtBrush 'PathBrush'
         $hint.Inlines.Add($run)
-        $hint.ToolTip = $Text
+        if ($More -gt 0) { $hint.Inlines.Add((New-Object System.Windows.Documents.Run "  ほか $More 台")) }
+        $hint.ToolTip = if ($ToolTip) { $ToolTip } else { $Text }
         return
     }
     $hint.Foreground = switch ($Kind) { 'warn' { Get-FtBrush 'WarnBrush' } 'error' { Get-FtBrush 'ErrorBrush' } default { Get-FtBrush 'MutedBrush' } }
     $hint.Inlines.Add((New-Object System.Windows.Documents.Run $Text))
+    if ($ToolTip) { $hint.ToolTip = $ToolTip }
     if ($WithLogon) {
         $hint.Inlines.Add((New-Object System.Windows.Documents.Run '  '))
         $link = New-Object System.Windows.Documents.Hyperlink (New-Object System.Windows.Documents.Run 'ログオン…')
         $link.Foreground = Get-FtBrush 'AccentBrush'
-        $link.Add_Click({ Show-FtLogon })
+        $link.Add_Click({ Request-FtLogon })
         $hint.Inlines.Add($link)
     }
 }
 
 function Update-FtHint {
-    param($Resolved)
-    $hostName = $Resolved.HostName
-    if (-not $Resolved.IsLocal -and -not $hostName) { Set-FtHint 'muted' 'ホスト名を入力するか、▾ から選んでください'; return }
+    param($Resolved, [object[]]$Targets)
+    if (-not $Resolved.IsLocal -and $Resolved.Names.Count -eq 0) { Set-FtHint 'muted' 'ホスト名を入力するか、▾ から選んでください'; return }
     if ($Resolved.Error) { Set-FtHint 'error' $Resolved.Error; return }
     if (-not $Resolved.IsLocal) {
-        switch ($script:Check.Status) {
-            'checking'    { Set-FtHint 'muted' '接続を確認しています…'; return }
-            'unreachable' { Set-FtHint 'error' "$hostName に接続できません（ホスト名を確認してください）"; return }
-            'noshare'     { Set-FtHint 'error' "$($script:Check.Root) が見つかりません（管理共有が無効の可能性があります）"; return }
-            'auth'        { Set-FtHint 'warn' "$hostName へのログオンが必要です" -WithLogon; return }
-            'conflict'    { Set-FtHint 'warn' "$hostName には別のユーザーで接続中です" -WithLogon; return }
-            'error'       { Set-FtHint 'warn' "$hostName の確認でエラーが発生しました（エラー $($script:Check.Code)）"; return }
+        $groups = Get-FtCheckGroups $Targets
+        $statusLines = ($Targets | ForEach-Object { "$($_.HostName): $(Get-FtStatusText (Get-FtCheck $_.HostName))" }) -join "`n"
+        if ($groups.checking.Count) { Set-FtHint 'muted' '接続を確認しています…'; return }
+        if ($groups.unreachable.Count) { Set-FtHint 'error' "$(Join-FtHostNames $groups.unreachable) に接続できません（ホスト名を確認してください）" -ToolTip $statusLines; return }
+        if ($groups.noshare.Count) {
+            $first = $groups.noshare[0]
+            $text = if ($Targets.Count -eq 1) { "$((Get-FtCheck $first).Root) が見つかりません（管理共有が無効の可能性があります）" } else { "$(Join-FtHostNames $groups.noshare) の共有が見つかりません（管理共有が無効の可能性があります）" }
+            Set-FtHint 'error' $text -ToolTip $statusLines
+            return
         }
+        $needLogon = @($groups.auth) + @($groups.conflict)
+        if ($needLogon.Count) {
+            $text = if ($needLogon.Count -eq 1 -and $groups.conflict.Count -eq 1) { "$($needLogon[0]) には別のユーザーで接続中です" } else { "$(Join-FtHostNames $needLogon) へのログオンが必要です" }
+            Set-FtHint 'warn' $text -WithLogon -ToolTip $statusLines
+            return
+        }
+        if ($groups.error.Count) { Set-FtHint 'warn' "$(Join-FtHostNames $groups.error) の確認でエラーが発生しました" -ToolTip $statusLines; return }
     }
-    Set-FtHint 'path' $Resolved.Path
+    $paths = @($Resolved.Targets | ForEach-Object { $_.Path })
+    Set-FtHint 'path' $paths[0] -More ($paths.Count - 1) -ToolTip ($paths -join "`n")
 }
 
 function Update-FtBadge {
-    param($Resolved)
+    param($Resolved, [object[]]$Targets)
     $badge = $ui.DestBadge
     if ($Resolved.IsLocal) {
         $ui.DestDot.Visibility = 'Collapsed'
@@ -434,15 +557,29 @@ function Update-FtBadge {
     $ui.DestPcIcon.Visibility = 'Collapsed'
     $dot = $ui.DestDot
     $dot.Stroke = $null
-    switch ($script:Check.Status) {
-        'ok'       { $dot.Fill = Get-FtBrush 'OkDotBrush'; $badge.ToolTip = "接続OK：$($script:Check.User)（クリックでアカウントを変更）" }
-        'auth'     { $dot.Fill = Get-FtBrush 'WarnDotBrush'; $badge.ToolTip = 'ログオンが必要です（クリックしてログオン）' }
-        'conflict' { $dot.Fill = Get-FtBrush 'WarnDotBrush'; $badge.ToolTip = '別のユーザーで接続中です（クリックしてログオン）' }
-        'checking' { $dot.Fill = Get-FtBrush 'IdleDotBrush'; $badge.ToolTip = '確認中…' }
-        'empty'    { $dot.Fill = $null; $dot.Stroke = Get-FtBrush 'FaintBrush'; $badge.ToolTip = $null }
-        default    { $dot.Fill = Get-FtBrush 'ErrorBrush'; $badge.ToolTip = '接続できません' }
+    $badge.IsEnabled = ($script:Phase -ne 'running') -and $Targets.Count -gt 0
+    if ($Targets.Count -eq 0) {
+        $dot.Fill = $null
+        $dot.Stroke = Get-FtBrush 'FaintBrush'
+        $badge.ToolTip = $null
+        return
     }
-    $badge.IsEnabled = ($script:Phase -ne 'running') -and [bool]$Resolved.HostName -and (Test-FtHostName $Resolved.HostName)
+    $groups = Get-FtCheckGroups $Targets
+    $dot.Fill = if ($groups.unreachable.Count -or $groups.noshare.Count -or $groups.error.Count) { Get-FtBrush 'ErrorBrush' }
+                elseif ($groups.checking.Count) { Get-FtBrush 'IdleDotBrush' }
+                elseif ($groups.auth.Count -or $groups.conflict.Count) { Get-FtBrush 'WarnDotBrush' }
+                else { Get-FtBrush 'OkDotBrush' }
+    if ($Targets.Count -eq 1) {
+        $check = Get-FtCheck $Targets[0].HostName
+        $badge.ToolTip = switch ($check.Status) {
+            'ok'       { "$(Get-FtStatusText $check)（クリックでアカウントを変更）" }
+            'auth'     { 'ログオンが必要です（クリックしてログオン）' }
+            'conflict' { '別のユーザーで接続中です（クリックしてログオン）' }
+            default    { Get-FtStatusText $check }
+        }
+    } else {
+        $badge.ToolTip = (@($Targets | ForEach-Object { "$($_.HostName): $(Get-FtStatusText (Get-FtCheck $_.HostName))" }) + '（クリックでアカウントを変更）') -join "`n"
+    }
 }
 
 function Update-FtView {
@@ -457,9 +594,10 @@ function Update-FtView {
     $ui.FolderBox.IsEnabled = -not $running
 
     $resolved = Resolve-FtCurrent
-    Update-FtBadge $resolved
-    Update-FtHint $resolved
-    $folderInvalid = $resolved.Error -and (Get-FtFolderText) -and ($resolved.IsLocal -or ($resolved.HostName -and (Test-FtHostName $resolved.HostName)))
+    $targets = Get-FtCheckTargets $resolved
+    Update-FtBadge $resolved $targets
+    Update-FtHint $resolved $targets
+    $folderInvalid = $resolved.Error -and (Get-FtFolderText) -and ($resolved.IsLocal -or $targets.Count -gt 0) -and $resolved.Error -notlike 'ホスト名*' -and $resolved.Error -notlike '「このPC」*'
     # 編集できる ComboBox は枠の色を変えられないので、文字を赤くする
     $ui.FolderBox.Foreground = if ($folderInvalid) { Get-FtBrush 'ErrorBrush' } else { Get-FtBrush 'TextBrush' }
 
@@ -505,12 +643,69 @@ function Update-FtNotice {
     }
 }
 
+# 一時フォルダに取得したもの（複数台に配るとき）を消す
+function Clear-FtRunStage {
+    if ($script:Run -and $script:Run.Stage -and $script:Run.Stage.Temporary) { Remove-FtStageFolder $script:Run.Stage.Folder }
+}
+
 # 完了・エラーの表示中に、送るファイルや送り先が変わったら元に戻す
 function Exit-FtFinished {
     if ($script:Phase -ne 'done' -and $script:Phase -ne 'error') { return }
+    if ($script:Phase -eq 'error') { Clear-FtRunStage }
     $script:Phase = 'idle'
     foreach ($item in $script:Items) { $item.State = ''; $item.Progress = 0 }
     Set-FtResult $null
+}
+
+# 複数のサーバーから 1 台を選ぶメニュー（Kind: logon | open | rdp）
+function Show-FtHostMenu {
+    param($Anchor, [string]$Kind)
+    $menu = New-Object System.Windows.Controls.ContextMenu
+    $entries = @()
+    switch ($Kind) {
+        'logon' {
+            foreach ($target in (Get-FtCheckTargets)) {
+                $entries += @{ Header = "$($target.HostName)（$(Get-FtStatusText (Get-FtCheck $target.HostName))）"; Tag = @{ Kind = 'logon'; HostName = $target.HostName } }
+            }
+        }
+        default {
+            foreach ($unit in @($script:Run.Dist.Hosts | Where-Object { $_.Status -eq 'success' })) {
+                $header = if ($Kind -eq 'open') { "$($unit.Name)：$($unit.Dest)" } else { "$($unit.Name) に接続" }
+                $entries += @{ Header = $header; Tag = @{ Kind = $Kind; HostName = $unit.HostName; Dest = $unit.Dest } }
+            }
+        }
+    }
+    foreach ($entry in $entries) {
+        $menuItem = New-Object System.Windows.Controls.MenuItem
+        $menuItem.Header = $entry.Header
+        $menuItem.Tag = $entry.Tag
+        $menuItem.Add_Click({ param($sender, $e) Invoke-FtHostAction $sender.Tag })
+        [void]$menu.Items.Add($menuItem)
+    }
+    $menu.PlacementTarget = $Anchor
+    $menu.Placement = [System.Windows.Controls.Primitives.PlacementMode]::Bottom
+    $menu.IsOpen = $true
+}
+
+function Invoke-FtHostAction {
+    param([hashtable]$Action)
+    switch ($Action.Kind) {
+        'logon' { Request-FtLogon $Action.HostName }
+        'open'  { Start-Process explorer.exe -ArgumentList ('"{0}"' -f $Action.Dest) }
+        'rdp'   { Start-Process mstsc.exe -ArgumentList "/v:$($Action.HostName)" }
+    }
+}
+
+# 結果の行の［開く］［RDP］: 1 か所ならそのまま、複数ならメニュー
+function Invoke-FtResultLink {
+    param($Anchor, [string]$Kind)
+    if (-not $script:Run) { return }
+    $hosts = @($script:Run.Dist.Hosts | Where-Object { $_.Status -eq 'success' })
+    if ($hosts.Count -eq 1) {
+        Invoke-FtHostAction @{ Kind = $Kind; HostName = $hosts[0].HostName; Dest = $hosts[0].Dest }
+    } elseif ($hosts.Count -gt 1) {
+        Show-FtHostMenu $Anchor $Kind
+    }
 }
 
 #endregion
@@ -529,14 +724,21 @@ function Format-FtDuration {
     return ('{0} 分 {1} 秒' -f [int][Math]::Floor($Seconds / 60), [int]($Seconds % 60))
 }
 
+function Format-FtRemaining {
+    param([double]$Seconds)
+    if ($Seconds -lt 60) { return ('{0} 秒' -f [int][Math]::Max(1, [Math]::Ceiling($Seconds))) }
+    return ('{0} 分 {1} 秒' -f [int][Math]::Floor($Seconds / 60), [int]($Seconds % 60))
+}
+
 function Save-FtSettings {
     try { Save-FtConfig $script:Config } catch { Write-FtLog "設定を保存できませんでした: $($_.Exception.Message)" }
 }
 
 function Save-FtHistory {
     $history = $script:Config.history
-    $dest = Get-FtDestText
-    if (-not (Test-FtLocalDestination $dest)) { $history.destinations = Add-FtHistory $history.destinations $dest.ToUpperInvariant() }
+    $names = Split-FtDestinations (Get-FtDestText)
+    $dest = Format-FtDestinations $names
+    if ($script:DestKind -ne 'local') { $history.destinations = Add-FtHistory $history.destinations $dest }
     $key = if ($script:DestKind -eq 'local') { 'localFolders' } else { 'serverFolders' }
     $history[$key] = Add-FtHistory $history[$key] (Get-FtFolderText)
     $script:Config.last = @{ destination = $dest; folder = (Get-FtFolderText) }
@@ -547,59 +749,66 @@ function Save-FtHistory {
 
 function Start-FtTransfer {
     if (-not (Test-FtCanStart)) { return }
-    $now = Get-Date
+
+    # ログオンが必要なサーバーがあれば、先にログオンしてもらう
+    foreach ($target in (Get-FtCheckTargets)) {
+        if ((Get-FtCheck $target.HostName).Status -in 'auth', 'conflict') {
+            if (-not (Show-FtLogon -HostName $target.HostName)) { Update-FtView; return }
+        }
+    }
+
+    # エラー後のやり直しは、{datetime} を展開し直さずに、失敗した送り先へだけ送る
+    $retry = $script:Phase -eq 'error' -and $script:Run -and $script:Run.Key -eq (Get-FtDestKey) -and $script:Run.FailedNames.Count -gt 0
+    $now = if ($retry) { $script:Run.Now } else { Get-Date }
     $resolved = Resolve-FtCurrent $now
-    if (-not $resolved.IsLocal -and $script:Check.Status -in 'auth', 'conflict') {
-        Show-FtLogon -Resume
-        return
-    }
-
-    # エラー後にやり直すときは、{datetime} を展開し直さず前回と同じフォルダへ送る
-    $dest = $resolved.Path
-    if ($script:Phase -eq 'error' -and $script:Run -and $script:Run.Key -eq (Get-FtDestKey)) {
-        $dest = $script:Run.Dest
-        $now = $script:Run.Now
-    }
-
-    $transfer = $script:Config.transfer
-    $stage = ''
-    if (-not $resolved.IsLocal -and $transfer.keepLocalCopy -and @($script:Items | Where-Object { $_.Path -like '\\*' }).Count -gt 0) {
-        $stage = [Environment]::ExpandEnvironmentVariables((Expand-FtTemplate -Template "$($transfer.localCopyFolder)" -Now $now -HostName $resolved.HostName))
-    }
-    $items = @($script:Items | ForEach-Object { @{ Path = $_.Path; IsFolder = $_.IsFolder; Size = [long][Math]::Max(0, $_.Size) } })
-    $steps = New-FtTransferPlan -Items $items -Destination $dest -StageFolder $stage -LargeThresholdBytes ([long]$transfer.unbufferedThresholdMB * 1MB)
-
-    $sync = [hashtable]::Synchronized(@{
-        Cancel          = $false
-        ProcessId       = 0
-        BytesTotal      = 0L
-        BytesDone       = 0L
-        CurrentItem     = $null
-        CurrentFraction = 0.0
-        StepIndex       = 0
-        Completed       = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
-        Log             = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
-        Result          = $null
+    if ($resolved.Error) { Update-FtView; return }
+    $allTargets = @($resolved.Targets | ForEach-Object {
+        @{ Name = $(if ($_.IsLocal) { Get-FtLocalLabel } else { $_.HostName }); HostName = $_.HostName; IsLocal = $_.IsLocal; Dest = $_.Path }
     })
+    $targets = if ($retry) { @($allTargets | Where-Object { $script:Run.FailedNames -contains $_.Name }) } else { $allTargets }
+    if ($targets.Count -eq 0) { $targets = $allTargets; $retry = $false }
+
+    $items = @($script:Items | ForEach-Object { @{ Path = $_.Path; IsFolder = $_.IsFolder; Size = [long][Math]::Max(0, $_.Size) } })
+    $transfer = $script:Config.transfer
+    $stage = if ($retry) { $script:Run.Stage } else {
+        Get-FtStageFolder -Items $items -TargetCount $allTargets.Count -IsLocal $resolved.IsLocal `
+            -KeepLocalCopy ([bool]$transfer.keepLocalCopy) -LocalCopyFolder "$($transfer.localCopyFolder)" -Now $now
+    }
+    $options = @{
+        RetryCount          = [int]$transfer.retryCount
+        RetryWaitSec        = [int]$transfer.retryWaitSec
+        Threads             = [int]$transfer.threadsForFolders
+        LargeThresholdBytes = [long]$transfer.unbufferedThresholdMB * 1MB
+        ParallelHosts       = [int]$transfer.parallelHosts
+    }
+    $distribution = New-FtDistribution -Items $items -Targets $targets -StageFolder $(if ($stage) { $stage.Folder } else { '' }) `
+        -ReuseStage:$retry -Options $options -Pool $script:Pool
+
     $script:Run = @{
-        Sync      = $sync
-        Dest      = $dest
-        Now       = $now
-        Key       = Get-FtDestKey
-        HostName  = $resolved.HostName
-        IsLocal   = $resolved.IsLocal
-        Started   = Get-Date
-        Samples   = New-Object System.Collections.Generic.List[object]
-        ItemCount = $script:Items.Count
-        Bytes     = Get-FtTotalBytes
+        Dist        = $distribution
+        Now         = $now
+        Key         = Get-FtDestKey
+        Stage       = $stage
+        IsLocal     = $resolved.IsLocal
+        Started     = Get-Date
+        Samples     = New-Object System.Collections.Generic.List[object]
+        ItemCount   = $script:Items.Count
+        Bytes       = Get-FtTotalBytes
+        FailedNames = @()
     }
     foreach ($item in $script:Items) { $item.State = ''; $item.Progress = 0 }
     $script:RunLog.Clear()
     $script:LastError = $null
+    $script:LogonTarget = $null
     $script:NoticeUntil = [datetime]::MinValue
-    Add-FtRunLog ("転送開始: {0} 件（{1}）→ {2}" -f $script:Items.Count, [FileTransfer.FileItem]::FormatSize($script:Run.Bytes), $dest)
-    if (-not $resolved.IsLocal) { Add-FtRunLog "  接続ユーザー: $(Get-FtHostUser $resolved.HostName)" }
-    if ($stage) { Add-FtRunLog "  ローカルにもコピーを残す: $stage" }
+    $label = if ($retry) { '再送開始' } else { '転送開始' }
+    Add-FtRunLog ("{0}: {1} 件（{2}）→ {3}" -f $label, $script:Items.Count, [FileTransfer.FileItem]::FormatSize($script:Run.Bytes), (($targets | ForEach-Object { $_.Dest }) -join ', '))
+    foreach ($item in $script:Items) { Add-FtRunLog "  $($item.Path)" }
+    foreach ($target in $targets) { if (-not $target.IsLocal) { Add-FtRunLog "  $($target.Name) の接続ユーザー: $(Get-FtHostUser $target.HostName)" } }
+    if ($stage) {
+        $note = if ($stage.Temporary) { '共有のファイルを一時フォルダに取得してから配ります' } else { 'この PC にもコピーを残します' }
+        Add-FtRunLog "  $note`: $($stage.Folder)"
+    }
     Save-FtHistory
 
     $script:Phase = 'running'
@@ -608,44 +817,28 @@ function Start-FtTransfer {
     $ui.TotalProgress.Value = 0
     $ui.ProgressText.Text = '接続しています…'
     Update-FtView
-
-    Start-FtJob -Script 'param($Steps, $Sync, $RetryCount, $RetryWaitSec, $Threads) Invoke-FtTransferPlan -Steps $Steps -Sync $Sync -RetryCount $RetryCount -RetryWaitSec $RetryWaitSec -Threads $Threads' `
-        -Parameters @{
-            Steps        = $steps
-            Sync         = $sync
-            RetryCount   = [int]$transfer.retryCount
-            RetryWaitSec = [int]$transfer.retryWaitSec
-            Threads      = [int]$transfer.threadsForFolders
-        } -OnComplete {
-            param($value, $err, $context)
-            Complete-FtTransfer $err
-        }
+    Step-FtDistribution $distribution
 }
 
 # 転送中の進捗を画面に反映する（タイマーから呼ぶ）
 function Update-FtRunProgress {
     if ($script:Phase -ne 'running' -or $null -eq $script:Run) { return }
-    $sync = $script:Run.Sync
+    $distribution = $script:Run.Dist
+    Step-FtDistribution $distribution
+    foreach ($line in (Read-FtDistributionLog $distribution)) { Add-FtRunLog $line }
 
-    $line = $null
-    while ($sync.Log.TryDequeue([ref]$line)) { Add-FtRunLog $line }
-    $path = $null
-    while ($sync.Completed.TryDequeue([ref]$path)) {
-        $item = Find-FtItem $path
-        if ($item) { $item.State = 'done'; $item.Progress = 0 }
-    }
-    $current = $sync.CurrentItem
+    $progress = Get-FtDistributionProgress $distribution
     foreach ($item in $script:Items) {
-        if ($item.State -eq 'cur' -and $item.Path -ine $current) { $item.State = '' }
+        $state = $progress.Items[$item.Path]
+        if (-not $state) { continue }
+        if ($item.State -ne $state.State) { $item.State = $state.State }
+        $item.Progress = if ($state.State -eq 'cur') { $state.Fraction } else { 0 }
     }
-    if ($current) {
-        $item = Find-FtItem $current
-        if ($item -and $item.State -ne 'done') { $item.State = 'cur'; $item.Progress = [double]$sync.CurrentFraction }
-    }
+    if ($distribution.Status -ne 'running') { Complete-FtTransfer; return }
+    if ($distribution.Cancel) { return }
 
-    if ($sync.Cancel) { return }
-    $total = [long]$sync.BytesTotal
-    $done = [long]$sync.BytesDone
+    $total = [long]$progress.BytesTotal
+    $done = [long]$progress.BytesDone
     $ui.TotalProgress.Value = if ($total -gt 0) { [Math]::Min(1, $done / $total) } else { 0 }
 
     # 直近 4 秒の平均速度
@@ -659,40 +852,43 @@ function Update-FtRunProgress {
         return
     }
     $speed = ($done - $samples[0].Bytes) / $span
-    $percent = if ($total -gt 0) { [int][Math]::Floor(100 * $done / $total) } else { 0 }
-    $remaining = if ($speed -gt 0) { '残り ' + (Format-FtRemaining (($total - $done) / $speed)) } else { '' }
-    $ui.ProgressText.Text = ('{0}%・{1}/s・{2}' -f $percent, [FileTransfer.FileItem]::FormatSize([long]$speed), $remaining).TrimEnd('・')
+    $parts = @(('{0}%' -f [int][Math]::Floor(100 * $done / [Math]::Max(1, $total))))
+    if ($progress.Staging) { $parts += 'この PC へ取得中' }
+    elseif ($progress.HostsTotal -gt 1) { $parts += ('{0}/{1} 台完了' -f $progress.HostsSucceeded, $progress.HostsTotal) }
+    $parts += ('{0}/s' -f [FileTransfer.FileItem]::FormatSize([long]$speed))
+    if ($speed -gt 0) { $parts += '残り ' + (Format-FtRemaining (($total - $done) / $speed)) }
+    $ui.ProgressText.Text = $parts -join '・'
 }
 
-function Format-FtRemaining {
-    param([double]$Seconds)
-    if ($Seconds -lt 60) { return ('{0} 秒' -f [int][Math]::Max(1, [Math]::Ceiling($Seconds))) }
-    return ('{0} 分 {1} 秒' -f [int][Math]::Floor($Seconds / 60), [int]($Seconds % 60))
+function Get-FtUnitErrorInfo {
+    param([hashtable]$Unit, [bool]$IsStage)
+    $result = $Unit.Result
+    $target = if ($IsStage) { 'この PC' } elseif ($Unit.IsLocal) { '送り先' } else { $Unit.Name }
+    return Get-FtErrorInfo -Code ([int]$result.Code) -Target $target -Missing @($result.Missing) -Fallback "$($result.Message)" -Server:(-not $IsStage -and -not $Unit.IsLocal)
 }
 
 function Complete-FtTransfer {
-    param($JobError)
-    Update-FtRunProgress
     $run = $script:Run
-    $sync = $run.Sync
-    $line = $null
-    while ($sync.Log.TryDequeue([ref]$line)) { Add-FtRunLog $line }
-    $result = $sync.Result
-    if ($null -eq $result) {
-        $message = if ($JobError) { $JobError.Message } else { '不明なエラー' }
-        $result = @{ Status = 'failed'; Code = 0; Message = $message; Missing = @() }
-    }
-    $elapsed = ((Get-Date) - $run.Started).TotalSeconds
+    $distribution = $run.Dist
+    foreach ($line in (Read-FtDistributionLog $distribution)) { Add-FtRunLog $line }
+    $summary = Get-FtDistributionSummary $distribution
+    $hosts = $distribution.Hosts
+    $elapsed = Format-FtDuration $summary.Elapsed
 
-    switch ($result.Status) {
+    switch ($summary.Status) {
         'success' {
             $script:Phase = 'done'
             foreach ($item in $script:Items) { $item.State = 'done'; $item.Progress = 0 }
-            $text = '{0} 件を転送しました（{1}・{2}）' -f $run.ItemCount, [FileTransfer.FileItem]::FormatSize($run.Bytes), (Format-FtDuration $elapsed)
+            $text = if ($hosts.Count -gt 1) {
+                '{0} 件を {1} 台に転送しました（{2}・{3}）' -f $run.ItemCount, $hosts.Count, [FileTransfer.FileItem]::FormatSize($run.Bytes), $elapsed
+            } else {
+                '{0} 件を転送しました（{1}・{2}）' -f $run.ItemCount, [FileTransfer.FileItem]::FormatSize($run.Bytes), $elapsed
+            }
             Add-FtRunLog "完了: $text"
             $links = @('Open')
             if (-not $run.IsLocal) { $links += 'Rdp' }
             Set-FtResult 'ok' $text $links
+            Clear-FtRunStage
         }
         'canceled' {
             $script:Phase = 'idle'
@@ -700,18 +896,53 @@ function Complete-FtTransfer {
             Add-FtRunLog '中止しました'
             $script:LastError = @{ Detail = '転送を中止しました。送り先に、途中までコピーされたファイルが残っている可能性があります。' }
             Show-FtNotice '中止しました。送り先に途中までのファイルが残っている可能性があります' 'warn' @('Detail')
+            Clear-FtRunStage
         }
         default {
             $script:Phase = 'error'
             foreach ($item in $script:Items) { if ($item.State -eq 'cur') { $item.State = ''; $item.Progress = 0 } }
-            $target = if ($run.IsLocal) { '送り先' } else { $run.HostName }
-            $info = Get-FtErrorInfo -Code ([int]$result.Code) -Target $target -Missing @($result.Missing) -Fallback "$($result.Message)" -Server:(-not $run.IsLocal)
-            $script:LastError = $info
-            Add-FtRunLog "エラー: $($info.Short)（終了コード $($result.ExitCode)）"
+            $first = @($summary.Failed)[0]
+            $info = if ($first) { Get-FtUnitErrorInfo $first $summary.StageFailed } else { Get-FtErrorInfo -Code 0 }
+            $succeeded = $summary.Succeeded.Count
+            $failedHosts = @($hosts | Where-Object { $_.Status -ne 'success' })
+            $short = if ($summary.StageFailed) { "この PC への取得に失敗しました：$($info.Short)" }
+                     elseif ($hosts.Count -eq 1) { $info.Short }
+                     elseif ($failedHosts.Count -eq 1) { if ($succeeded) { "$($info.Short)（ほか $succeeded 台は完了）" } else { $info.Short } }
+                     elseif ($succeeded) { "$($failedHosts.Count) 台で失敗しました（$succeeded 台は完了）" }
+                     else { "$($failedHosts.Count) 台とも失敗しました" }
+
+            # ［詳細］: 送り先ごとの結果と、最初の失敗の説明
+            $detail = $info.Detail
+            if ($hosts.Count -gt 1 -or $distribution.Stage) {
+                $lines = @()
+                $units = @()
+                if ($distribution.Stage -and -not $distribution.Stage.Reused) { $units += $distribution.Stage }
+                $units += $hosts
+                foreach ($unit in $units) {
+                    $isStage = $unit -eq $distribution.Stage
+                    $lines += switch ($unit.Status) {
+                        'success'  { "$($unit.Name): 完了（$(Format-FtDuration $unit.Elapsed)）" }
+                        'failed'   { "$($unit.Name): $((Get-FtUnitErrorInfo $unit $isStage).Short)" }
+                        'skipped'  { "$($unit.Name): 取得に失敗したため送っていません" }
+                        'canceled' { "$($unit.Name): 中止" }
+                        default    { "$($unit.Name): 未実行" }
+                    }
+                }
+                $detail = ($lines -join "`n") + "`n`n" + $info.Detail
+            }
+            $script:LastError = @{ Short = $short; Detail = $detail }
+            $script:Run.FailedNames = @($failedHosts | ForEach-Object { $_.Name })
+
+            # ［ログオン…］は、ログオンで直りそうな失敗をしたサーバーに出す
+            $script:LogonTarget = $null
+            foreach ($unit in $failedHosts) {
+                if ($unit.Status -eq 'failed' -and -not $unit.IsLocal -and (Get-FtUnitErrorInfo $unit $false).NeedsLogon) { $script:LogonTarget = $unit.HostName; break }
+            }
+            Add-FtRunLog "エラー: $short"
             $links = @()
-            if ($info.NeedsLogon -and -not $run.IsLocal) { $links += 'Logon' }
+            if ($script:LogonTarget) { $links += 'Logon' }
             $links += 'Detail'
-            Set-FtResult 'error' $info.Short $links
+            Set-FtResult 'error' $short $links
         }
     }
     Update-FtView
@@ -719,17 +950,10 @@ function Complete-FtTransfer {
 
 function Stop-FtTransfer {
     if ($script:Phase -ne 'running') { return }
-    $sync = $script:Run.Sync
-    $sync.Cancel = $true
+    $script:Run.Dist.Cancel = $true
     $ui.CancelButton.IsEnabled = $false
     $ui.ProgressText.Text = '中止しています…'
-    $processId = [int]$sync.ProcessId
-    if ($processId -gt 0) {
-        try {
-            $process = Get-Process -Id $processId -ErrorAction Stop
-            if ($process.ProcessName -ieq 'robocopy') { $process.Kill() }
-        } catch { }
-    }
+    Step-FtDistribution $script:Run.Dist
 }
 
 #endregion
@@ -751,31 +975,36 @@ function Submit-FtLogon {
     $state.Busy = $true
     $state.User = $user
     $state.Save = [bool]$d.SaveBox.IsChecked
+    $targets = @(@{ HostName = $state.HostName; ShareRoot = $state.Root })
+    if ($d.ApplyOthersBox.Visibility -eq 'Visible' -and $d.ApplyOthersBox.IsChecked) { $targets += $state.Others }
     $d.ErrorText.Visibility = 'Collapsed'
     $d.OkButton.Content = '接続中…'
-    foreach ($control in $d.OkButton, $d.UserBox, $d.PassBox, $d.SaveBox) { $control.IsEnabled = $false }
-    Start-FtJob -Script 'param($HostName, $ShareRoot, $UserName, $Password, $Save) Connect-FtShare -HostName $HostName -ShareRoot $ShareRoot -UserName $UserName -Password $Password -Save:$Save' `
-        -Parameters @{ HostName = $state.HostName; ShareRoot = $state.Root; UserName = $user; Password = $d.PassBox.SecurePassword.Copy(); Save = $state.Save } `
+    foreach ($control in $d.OkButton, $d.UserBox, $d.PassBox, $d.SaveBox, $d.ApplyOthersBox) { $control.IsEnabled = $false }
+    Start-FtJob -Script 'param($Targets, $UserName, $Password, $Save) Connect-FtShareGroup -Targets $Targets -UserName $UserName -Password $Password -Save:$Save' `
+        -Parameters @{ Targets = $targets; UserName = $user; Password = $d.PassBox.SecurePassword.Copy(); Save = $state.Save } `
         -Context $state -OnComplete {
             param($value, $err, $context)
             $context.Busy = $false
+            $results = @($value)
             if (-not $context.Dialog.IsVisible) {
                 # 接続中にキャンセルされた: 接続できていたら、終了時に切断する
-                if ($value -and $value.Code -eq 0 -and -not $script:Connections.Contains($value.Root)) { $script:Connections.Add($value.Root) }
+                foreach ($result in $results) {
+                    if ($result -and $result.Code -eq 0 -and -not $script:Connections.Contains($result.Root)) { $script:Connections.Add($result.Root) }
+                }
                 return
             }
             $dd = $context.D
             $dd.OkButton.Content = 'OK'
-            foreach ($control in $dd.OkButton, $dd.UserBox, $dd.PassBox, $dd.SaveBox) { $control.IsEnabled = $true }
-            if ($err) {
-                $dd.ErrorText.Text = $err.Message
-            } elseif ($value.Code -eq 0) {
-                $context.Result = $value
+            foreach ($control in $dd.OkButton, $dd.UserBox, $dd.PassBox, $dd.SaveBox, $dd.ApplyOthersBox) { $control.IsEnabled = $true }
+            if ($err -or $results.Count -eq 0) {
+                $dd.ErrorText.Text = if ($err) { $err.Message } else { '接続できませんでした。' }
+            } elseif ($results[0].Code -eq 0) {
+                $context.Result = $results
                 $context.Dialog.DialogResult = $true
                 return
             } else {
-                $info = Get-FtErrorInfo -Code ([int]$value.Code) -Target $context.HostName -Server
-                $dd.ErrorText.Text = $info.Short + "（エラー $($value.Code)）"
+                $info = Get-FtErrorInfo -Code ([int]$results[0].Code) -Target $context.HostName -Server
+                $dd.ErrorText.Text = $info.Short + "（エラー $($results[0].Code)）"
             }
             $dd.ErrorText.Visibility = 'Visible'
             [void]$dd.PassBox.Focus()
@@ -783,26 +1012,33 @@ function Submit-FtLogon {
         }
 }
 
+# ログオンダイアログ。ログオンできたら $true を返す
 function Show-FtLogon {
-    param([switch]$Resume)
-    if ($script:Phase -eq 'running') { return }
-    $resolved = Resolve-FtCurrent
-    if ($resolved.IsLocal -or -not $resolved.HostName -or -not (Test-FtHostName $resolved.HostName)) { return }
-    $hostName = $resolved.HostName
-    $root = if ($resolved.ShareRoot) { $resolved.ShareRoot } else { "\\$hostName\C`$" }
+    param([string]$HostName)
+    if ($script:Phase -eq 'running' -or -not $HostName) { return $false }
+    $targets = Get-FtCheckTargets
+    $target = $targets | Where-Object { $_.HostName -eq $HostName } | Select-Object -First 1
+    $root = if ($target) { $target.Root } else { "\\$HostName\C`$" }
+    $others = @($targets | Where-Object { $_.HostName -ne $HostName -and (Get-FtCheck $_.HostName).Status -in 'auth', 'conflict' } |
+        ForEach-Object { @{ HostName = $_.HostName; ShareRoot = $_.Root } })
 
     $dialog = Read-FtXaml 'LogonDialog.xaml'
     $dialog.Owner = $window
-    $d = Get-FtNamedElements $dialog @('Heading', 'UserBox', 'UserPlaceholder', 'PassBox', 'ErrorText', 'SaveBox', 'OkButton', 'CancelButton')
+    $d = Get-FtNamedElements $dialog @('Heading', 'UserBox', 'UserPlaceholder', 'PassBox', 'ErrorText', 'SaveBox', 'ApplyOthersBox', 'ApplyOthersText', 'OkButton', 'CancelButton')
     # ハンドラーからは $script:Logon で参照する（GetNewClosure を使うとスクリプトの関数が見えなくなるため）
-    $script:Logon = @{ Result = $null; Busy = $false; Dialog = $dialog; D = $d; HostName = $hostName; Root = $root; User = ''; Save = $false }
+    $script:Logon = @{ Result = $null; Busy = $false; Dialog = $dialog; D = $d; HostName = $HostName; Root = $root; Others = $others; User = ''; Save = $false }
     $state = $script:Logon
 
-    $d.Heading.Text = "$hostName にログオン"
-    $d.UserPlaceholder.Text = "$hostName\ユーザー名 または $env:USERDOMAIN\ユーザー名"
-    $initialUser = if ($script:SessionUsers.ContainsKey($hostName)) { $script:SessionUsers[$hostName] } else { Get-FtSavedUser $hostName }
+    $d.Heading.Text = "$HostName にログオン"
+    $d.UserPlaceholder.Text = "$HostName\ユーザー名 または $env:USERDOMAIN\ユーザー名"
+    $initialUser = if ($script:SessionUsers.ContainsKey($HostName)) { $script:SessionUsers[$HostName] } else { Get-FtSavedUser $HostName }
     $d.UserBox.Text = "$initialUser"
     $d.UserPlaceholder.Visibility = if ($d.UserBox.Text) { 'Collapsed' } else { 'Visible' }
+    if ($others.Count -gt 0) {
+        $names = ($others | ForEach-Object { $_.HostName }) -join '、'
+        $d.ApplyOthersText.Text = "ログオンが必要なほかの $($others.Count) 台（$names）にも、同じアカウントで接続する"
+        $d.ApplyOthersBox.Visibility = 'Visible'
+    }
     $d.UserBox.Add_TextChanged({
         $dd = $script:Logon.D
         $dd.UserPlaceholder.Visibility = if ($dd.UserBox.Text) { 'Collapsed' } else { 'Visible' }
@@ -814,22 +1050,40 @@ function Show-FtLogon {
     })
     [void]$dialog.ShowDialog()
 
-    $value = $state.Result
-    if ($null -eq $value) { return }
-    $script:SessionUsers[$hostName] = $state.User
-    if ($value.ConnectName -and $value.ConnectName -ine $hostName) { $script:HostAlias[$hostName] = $value.ConnectName }
-    if (-not $script:Connections.Contains($value.Root)) { $script:Connections.Add($value.Root) }
-    $script:Check.Seq++
-    $script:Check.Status = 'ok'
-    $script:Check.Code = 0
-    $script:Check.User = $state.User
-    $script:Check.Root = $value.Root
-    $saved = if ($value.Saved) { '（資格情報を保存）' } else { '' }
-    Write-FtLog "$hostName に $($state.User) でログオンしました$saved"
-    if ($state.Save -and -not $value.Saved) { Show-FtNotice "資格情報を保存できませんでした（エラー $($value.SaveError)）" 'warn' }
-    $retry = $Resume -or $script:Phase -eq 'error'
+    $results = $state.Result
+    if ($null -eq $results) { return $false }
+    $failures = @()
+    foreach ($result in $results) {
+        if ($result.Code -ne 0) {
+            $failures += "$($result.HostName)（$((Get-FtErrorInfo -Code ([int]$result.Code) -Target $result.HostName -Server).Short)）"
+            continue
+        }
+        $hostName = $result.HostName
+        $script:SessionUsers[$hostName] = $result.UserName
+        if ($result.ConnectName -and $result.ConnectName -ine $hostName) { $script:HostAlias[$hostName] = $result.ConnectName }
+        if (-not $script:Connections.Contains($result.Root)) { $script:Connections.Add($result.Root) }
+        $script:Checks[$hostName] = @{ Status = 'ok'; Code = 0; User = $result.UserName; Root = $result.Root }
+        $saved = if ($result.Saved) { '（資格情報を保存）' } else { '' }
+        Write-FtLog "$hostName に $($result.UserName) でログオンしました$saved"
+        if ($state.Save -and -not $result.Saved) { $failures += "$hostName（資格情報を保存できませんでした: エラー $($result.SaveError)）" }
+    }
+    if ($failures.Count -gt 0) { Show-FtNotice ('ログオンできなかったサーバーがあります：' + ($failures -join '、')) 'warn' }
     Update-FtView
-    if ($retry) { Start-FtTransfer }
+    return $true
+}
+
+# 画面からのログオン（ヒントの［ログオン…］、● のメニュー、結果の行の［ログオン…］）
+# エラーの表示中なら、ログオンできたらそのまま送り直す
+function Request-FtLogon {
+    param([string]$HostName)
+    if (-not $HostName) {
+        $targets = Get-FtCheckTargets
+        $first = $targets | Where-Object { (Get-FtCheck $_.HostName).Status -in 'auth', 'conflict' } | Select-Object -First 1
+        if (-not $first) { $first = $targets | Select-Object -First 1 }
+        if (-not $first) { return }
+        $HostName = $first.HostName
+    }
+    if ((Show-FtLogon -HostName $HostName) -and $script:Phase -eq 'error') { Start-FtTransfer }
 }
 
 function Show-FtDetails {
@@ -860,11 +1114,14 @@ $ui.AddButton.Add_Click({ Show-FtOpenDialog })
 $ui.ClearButton.Add_Click({ Remove-FtItems @($script:Items) })
 $ui.StartButton.Add_Click({ Start-FtTransfer })
 $ui.CancelButton.Add_Click({ Stop-FtTransfer })
-$ui.DestBadge.Add_Click({ Show-FtLogon })
-$ui.LogonLink.Add_Click({ Show-FtLogon })
+$ui.DestBadge.Add_Click({
+    $targets = Get-FtCheckTargets
+    if ($targets.Count -gt 1) { Show-FtHostMenu $ui.DestBadge 'logon' } else { Request-FtLogon }
+})
+$ui.LogonLink.Add_Click({ Request-FtLogon $script:LogonTarget })
 $ui.DetailLink.Add_Click({ Show-FtDetails })
-$ui.OpenLink.Add_Click({ if ($script:Run) { Start-Process explorer.exe -ArgumentList ('"{0}"' -f $script:Run.Dest) } })
-$ui.RdpLink.Add_Click({ if ($script:Run -and $script:Run.HostName) { Start-Process mstsc.exe -ArgumentList "/v:$($script:Run.HostName)" } })
+$ui.OpenLink.Add_Click({ Invoke-FtResultLink $ui.OpenLink 'open' })
+$ui.RdpLink.Add_Click({ Invoke-FtResultLink $ui.RdpLink 'rdp' })
 
 # 一覧の行の ×
 $ui.FileList.AddHandler([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, [System.Windows.RoutedEventHandler] {
@@ -932,7 +1189,7 @@ $window.Add_Closing({
     if ($script:Phase -eq 'running') {
         $answer = [System.Windows.MessageBox]::Show($window, '転送中です。中止して閉じますか？', 'FileTransfer', 'YesNo', 'Warning')
         if ($answer -ne 'Yes') { $e.Cancel = $true; return }
-        Stop-FtTransfer
+        Stop-FtDistribution $script:Run.Dist -TimeoutMs 5000
     }
     if ($window.WindowState -eq 'Normal') {
         $script:Config.window = @{ left = [int]$window.Left; top = [int]$window.Top; height = [int]$window.Height }
@@ -944,6 +1201,7 @@ $window.Add_Closing({
 $window.Add_Closed({
     $script:Timer.Stop()
     foreach ($root in $script:Connections) { Disconnect-FtShare $root }
+    Clear-FtRunStage
 })
 
 # 想定外の例外はログに残して知らせる（アプリは落とさない）
@@ -978,7 +1236,8 @@ function Initialize-FtWindow {
     $last = $script:Config.last
     $destination = "$($last.destination)"
     if (-not $destination) { $destination = "$(@($script:Config.history.destinations)[0])" }
-    $script:DestKind = if (Test-FtLocalDestination $destination) { 'local' } else { 'server' }
+    $names = Split-FtDestinations $destination
+    $script:DestKind = if ($names.Count -gt 0 -and @($names | Where-Object { -not (Test-FtLocalDestination $_) }).Count -eq 0) { 'local' } else { 'server' }
     if ($last.folder) { $script:LastFolder[$script:DestKind] = "$($last.folder)" }
 
     Update-FtDestItems
