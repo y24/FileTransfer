@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FileTransfer UI モック</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #dfe5ec;
+    --win: #f9f9f9;
+    --line: #e3e3e3;
+    --line-strong: #cbcbcb;
+    --text: #1b1b1b;
+    --muted: #616161;
+    --faint: #8b8b8b;
+    --accent: #005fb8;
+    --accent-hover: #1a6ec0;
+    --accent-soft: #dcebf9;
+    --sel: #e8f1fb;
+    --ok: #0e700e;
+    --ok-dot: #13a10e;
+    --warn: #8a5300;
+    --warn-dot: #e0a100;
+    --err: #c42b1c;
+    --font: "Segoe UI Variable Text", "Segoe UI", "Yu Gothic UI", "Meiryo UI", system-ui, sans-serif;
+    --mono: "Cascadia Mono", Consolas, "BIZ UDGothic", "MS Gothic", monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--page); color: var(--text); font: 13px/1.5 var(--font); }
+  a { color: var(--accent); }
+  kbd { font: 11px var(--mono); padding: 0 4px; border: 1px solid #c8c8c8; border-bottom-width: 2px; border-radius: 3px; background: #fff; }
+  code { font-family: var(--mono); font-size: 12px; padding: 0 4px; border-radius: 3px; background: #eef1f4; }
+
+  /* ---------- page ---------- */
+  .page { max-width: 980px; margin: 0 auto; padding: 20px 16px 48px; }
+  .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+  .page-head h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .page-head p { margin: 2px 0 0; color: var(--muted); }
+  .demo { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .demo > span { margin-right: 2px; color: var(--muted); }
+  .demo button { font: inherit; font-size: 12px; height: 26px; padding: 0 10px; border: 1px solid #b9c3ce; border-radius: 13px; background: rgba(255,255,255,.7); color: var(--text); cursor: pointer; }
+  .demo button:hover { background: #fff; }
+  .demo button.on { background: #1b1b1b; border-color: #1b1b1b; color: #fff; }
+  .stage { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start; gap: 28px; margin-top: 28px; }
+
+  /* ---------- window ---------- */
+  .window { position: relative; flex: none; width: 400px; max-width: 100%; overflow: hidden; border: 1px solid #c4c4c4; border-radius: 8px; background: var(--win); box-shadow: 0 10px 30px rgba(0,0,0,.16), 0 2px 6px rgba(0,0,0,.08); font-size: 12.5px; }
+  .titlebar { display: flex; align-items: center; gap: 8px; height: 32px; padding-left: 12px; font-size: 12px; user-select: none; }
+  .titlebar .sp { flex: 1; }
+  .cap { display: grid; place-items: center; width: 42px; height: 32px; color: #444; }
+  .cap:hover { background: rgba(0,0,0,.06); }
+  .cap.close:hover { background: #c42b1c; color: #fff; }
+  .body { display: flex; flex-direction: column; gap: 14px; padding: 2px 14px 14px; }
+
+  .sec-head { display: flex; align-items: center; gap: 8px; height: 26px; margin-bottom: 4px; }
+  .sec-head h2 { margin: 0; font-size: 12.5px; font-weight: 600; }
+  .sec-head .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sp { flex: 1; }
+  .link { font: inherit; padding: 1px 5px; border: 0; border-radius: 3px; background: none; color: var(--accent); cursor: pointer; }
+  .link:hover { background: rgba(0,95,184,.08); }
+  .icon-btn { display: grid; place-items: center; width: 28px; height: 26px; padding: 0; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; color: var(--text); cursor: pointer; }
+  .icon-btn:hover { background: #f3f3f3; }
+  .icon-btn:disabled { background: #f6f6f6; color: #aaa; cursor: default; }
+
+  /* file list */
+  .list { position: relative; height: 142px; overflow: auto; border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; outline: none; }
+  .list:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+  .list.drag { background: var(--sel); box-shadow: inset 0 0 0 2px var(--accent); }
+  .frow { --p: 0%; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto 20px; align-items: center; gap: 8px; height: 28px; padding: 0 4px 0 10px; user-select: none; }
+  .frow:hover { background: #f5f5f5; }
+  .frow.sel { background: var(--sel); }
+  .frow.cur { background: linear-gradient(to right, var(--accent-soft) var(--p), transparent var(--p)); }
+  .frow .ic { display: grid; place-items: center; color: var(--faint); }
+  .frow.done .ic { color: var(--ok); }
+  .frow .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .frow .sz { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .frow .x { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 3px; background: none; color: var(--muted); cursor: pointer; visibility: hidden; }
+  .frow:hover .x, .frow.sel .x { visibility: visible; }
+  .frow .x:hover { background: rgba(0,0,0,.08); color: var(--text); }
+  .list.locked .frow .x { visibility: hidden; }
+  .list.locked .frow:hover { background: transparent; }
+  .list.locked .frow.cur:hover { background: linear-gradient(to right, var(--accent-soft) var(--p), transparent var(--p)); }
+  .empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; padding: 12px; color: var(--muted); text-align: center; }
+  .empty .big { color: var(--text); }
+  .spin { width: 12px; height: 12px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: rot .8s linear infinite; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  /* destination */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .combo { position: relative; display: flex; align-items: center; height: 30px; border: 1px solid var(--line-strong); border-bottom-color: #8a8a8a; border-radius: 4px; background: #fff; }
+  .combo:focus-within { border-bottom-color: var(--accent); box-shadow: inset 0 -1px 0 var(--accent); }
+  .combo.invalid { border-color: var(--err); box-shadow: inset 0 -1px 0 var(--err); }
+  .combo.disabled { background: #f6f6f6; }
+  .combo input { flex: 1; min-width: 0; height: 100%; padding: 0 8px; border: 0; background: transparent; color: var(--text); font: inherit; outline: none; }
+  .combo input:disabled { color: #8d8d8d; }
+  .combo input.mono { font-family: var(--mono); font-size: 12px; }
+  .combo .lead { display: grid; place-items: center; width: 28px; height: 100%; margin-right: -6px; padding: 0; border: 0; background: none; color: var(--muted); cursor: pointer; }
+  .combo .lead:disabled { cursor: default; }
+  .combo .chev { display: grid; place-items: center; width: 28px; height: 100%; padding: 0; border: 0; border-radius: 0 3px 3px 0; background: none; color: var(--muted); cursor: pointer; }
+  .combo .chev:hover { background: #f1f1f1; }
+  .combo .chev:disabled { background: none; cursor: default; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #bdbdbd; }
+  .dot.ok { background: var(--ok-dot); }
+  .dot.auth { background: var(--warn-dot); }
+  .dot.unreachable { background: var(--err); }
+  .dot.empty { background: transparent; border: 1.5px solid #9b9b9b; }
+  .dot.checking { animation: pulse .8s ease-in-out infinite alternate; }
+  @keyframes pulse { from { opacity: .25; } to { opacity: 1; } }
+  .menu { position: absolute; top: calc(100% + 2px); left: -1px; right: -1px; z-index: 5; margin: 0; padding: 4px; list-style: none; border: 1px solid #d0d0d0; border-radius: 6px; background: #fff; box-shadow: 0 8px 20px rgba(0,0,0,.14); }
+  .menu li { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; border-radius: 4px; color: var(--text); cursor: pointer; }
+  .menu li svg { color: var(--muted); }
+  .menu li:hover { background: #f0f0f0; }
+  .menu li.on { font-weight: 600; }
+  .menu .mono { font-family: var(--mono); font-size: 12px; }
+  .hint { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; min-height: 19px; color: var(--muted); font-size: 12px; }
+  .hint .path { font-family: var(--mono); font-size: 11.5px; color: #0b3d6e; word-break: break-all; }
+  .hint.warn { color: var(--warn); }
+  .hint.err { color: var(--err); }
+  .hint .link { padding: 0 4px; }
+
+  /* footer */
+  .foot { display: flex; flex-direction: column; gap: 8px; }
+  .result { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: 12px; }
+  .result > svg { flex: none; }
+  .result.ok { color: var(--ok); }
+  .result.err { color: var(--err); }
+  .btn { font: inherit; height: 30px; padding: 0 12px; border: 1px solid var(--line-strong); border-bottom-color: #b3b3b3; border-radius: 4px; background: #fbfbfb; color: var(--text); cursor: pointer; }
+  .btn:hover { background: #f3f3f3; }
+  .btn.primary { background: var(--accent); border-color: #0a56a3; color: #fff; }
+  .btn.primary:hover { background: var(--accent-hover); }
+  .btn.primary:disabled { background: #c4c4c4; border-color: #c4c4c4; cursor: default; }
+  .btn.big { width: 100%; height: 36px; font-size: 13px; font-weight: 600; }
+  .btn.sm { height: 26px; padding: 0 10px; }
+  .prog .bar { height: 6px; overflow: hidden; border-radius: 3px; background: #e4e4e4; }
+  .prog .bar i { display: block; width: 0; height: 100%; border-radius: 3px; background: var(--accent); transition: width .1s linear; }
+  .prog-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 5px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  /* dialogs */
+  .overlay { position: absolute; inset: 0; z-index: 10; display: none; align-items: center; justify-content: center; padding: 12px; background: rgba(0,0,0,.28); }
+  .overlay.open { display: flex; }
+  .dialog { width: min(320px, 100%); overflow: hidden; border: 1px solid #d4d4d4; border-radius: 8px; background: #fff; box-shadow: 0 16px 40px rgba(0,0,0,.28); }
+  .dialog.wide { width: min(370px, 100%); }
+  .d-body { padding: 16px 18px 12px; }
+  .d-body h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+  .d-body h3 small { display: block; margin-top: 1px; color: var(--faint); font-size: 11px; font-weight: 400; }
+  .d-label { display: block; margin-bottom: 3px; color: var(--muted); }
+  .input { width: 100%; height: 30px; margin-bottom: 10px; padding: 0 8px; border: 1px solid var(--line-strong); border-bottom-color: #8a8a8a; border-radius: 4px; background: #fff; color: var(--text); font: inherit; }
+  .input:focus { outline: none; border-bottom-color: var(--accent); box-shadow: inset 0 -1px 0 var(--accent); }
+  .input::placeholder { color: #a0a0a0; }
+  .d-err { margin: -2px 0 10px; color: var(--err); font-size: 12px; }
+  .check { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+  .check input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+  .d-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 18px; border-top: 1px solid var(--line); background: #f3f3f3; }
+  .addr { height: 28px; margin-bottom: 8px; padding: 0 8px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 4px; background: #fafafa; font: 12px/26px var(--mono); white-space: nowrap; text-overflow: ellipsis; }
+  .plist { height: 150px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; }
+  .prow { display: grid; grid-template-columns: 16px 16px minmax(0, 1fr) auto; align-items: center; gap: 8px; height: 28px; padding: 0 10px; user-select: none; cursor: default; }
+  .prow:hover { background: #f5f5f5; }
+  .prow.sel { background: var(--sel); }
+  .prow input { margin: 0; pointer-events: none; accent-color: var(--accent); }
+  .prow svg { color: var(--faint); }
+  .prow .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow .sz { color: var(--muted); font-size: 12px; }
+  .d-msg { margin: 0 0 10px; white-space: pre-line; }
+  .logbox { max-height: 150px; margin: 0; padding: 8px 10px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; background: #fafafa; font: 11.5px/1.55 var(--mono); white-space: pre-wrap; word-break: break-all; }
+
+  .toast { position: absolute; left: 50%; bottom: 14px; z-index: 20; width: max-content; max-width: calc(100% - 28px); padding: 7px 12px; border-radius: 6px; background: #2b2b2b; color: #fff; font-size: 12px; opacity: 0; pointer-events: none; transform: translate(-50%, 6px); transition: opacity .2s, transform .2s; }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- notes ---------- */
+  .notes { flex: 1 1 280px; max-width: 400px; padding: 14px 16px; border: 1px solid #c9d2dc; border-radius: 8px; background: rgba(255,255,255,.72); }
+  .notes h2 { margin: 0 0 6px; font-size: 13.5px; font-weight: 600; }
+  .notes h2:not(:first-child) { margin-top: 14px; }
+  .notes ul { margin: 0; padding-left: 18px; }
+  .notes li { margin-bottom: 5px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="page-head">
+    <div>
+      <h1>FileTransfer — UI モック</h1>
+      <p>設計書 <a href="design.md">design.md</a>「5. 画面設計」に対応。実際の接続・転送は行いません。</p>
+    </div>
+    <nav class="demo" aria-label="画面の状態を切り替え">
+      <span>状態:</span>
+      <button data-demo="initial">初期</button>
+      <button data-demo="selected">ファイル選択済み</button>
+      <button data-demo="auth">ログオンが必要</button>
+      <button data-demo="running">転送中</button>
+      <button data-demo="done">完了</button>
+      <button data-demo="error">エラー</button>
+    </nav>
+  </header>
+
+  <div class="stage">
+    <div class="window" id="win">
+      <div class="titlebar">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><rect width="16" height="16" rx="3.5" fill="#005fb8"/><path d="M4 6h7.5M9.5 3.75 11.75 6 9.5 8.25M12 10H4.5M6.5 7.75 4.25 10l2.25 2.25" fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>FileTransfer</span>
+        <span class="sp"></span>
+        <span class="cap" aria-hidden="true">&#x2014;</span><span class="cap close" aria-hidden="true">&#x2715;</span>
+      </div>
+
+      <div class="body">
+        <!-- 送るファイル -->
+        <section>
+          <div class="sec-head">
+            <h2>送るファイル</h2>
+            <span class="count" id="count"></span>
+            <span class="sp"></span>
+            <button class="link" id="clear" type="button">クリア</button>
+            <button class="icon-btn" id="add" type="button" title="ファイルを追加" aria-label="ファイルを追加"><span data-icon="plus"></span></button>
+          </div>
+          <div class="list" id="list" tabindex="0" aria-label="送るファイル"></div>
+        </section>
+
+        <!-- 送り先 -->
+        <section>
+          <div class="sec-head"><h2>送り先</h2></div>
+          <div class="fields">
+            <div class="combo" id="destCombo">
+              <button class="lead" id="destIcon" type="button" tabindex="-1"></button>
+              <input id="dest" value="SV-APP01" placeholder="ホスト名 または このPC" autocomplete="off" spellcheck="false" aria-label="送り先">
+              <button class="chev" type="button" tabindex="-1" aria-label="履歴を表示"><span data-icon="chevron"></span></button>
+              <ul class="menu" hidden></ul>
+            </div>
+            <div class="combo" id="folderCombo">
+              <input id="folder" class="mono" value="C:\Work\{datetime}" placeholder="例: C:\Work\{datetime}" autocomplete="off" spellcheck="false" aria-label="フォルダ">
+              <button class="chev" type="button" tabindex="-1" aria-label="履歴を表示"><span data-icon="chevron"></span></button>
+              <ul class="menu" hidden></ul>
+            </div>
+            <div class="hint" id="hint" role="status"></div>
+          </div>
+        </section>
+
+        <!-- 転送 -->
+        <div class="foot">
+          <div class="result" id="result" hidden></div>
+          <div class="prog" id="prog" hidden>
+            <div class="bar"><i id="bar"></i></div>
+            <div class="prog-line"><span id="progText"></span><button class="btn sm" id="cancel" type="button">中止</button></div>
+          </div>
+          <button class="btn primary big" id="start" type="button">転送開始</button>
+        </div>
+      </div>
+
+      <!-- ログオン -->
+      <div class="overlay" id="credOv" role="dialog" aria-modal="true" aria-labelledby="credTitle">
+        <form class="dialog" id="credForm" autocomplete="off">
+          <div class="d-body">
+            <h3 id="credTitle"></h3>
+            <label class="d-label" for="credUser">ユーザー名</label>
+            <input class="input" id="credUser" spellcheck="false">
+            <label class="d-label" for="credPass">パスワード</label>
+            <input class="input" id="credPass" type="password">
+            <div class="d-err" id="credErr" hidden></div>
+            <label class="check"><input type="checkbox" id="credSave" checked>資格情報を保存する</label>
+          </div>
+          <div class="d-foot">
+            <button class="btn" id="credCancel" type="button">キャンセル</button>
+            <button class="btn primary" id="credOk" type="submit">OK</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- ファイル選択（実装では Windows 標準ダイアログ） -->
+      <div class="overlay" id="pickOv" role="dialog" aria-modal="true" aria-labelledby="pickTitle">
+        <div class="dialog wide">
+          <div class="d-body">
+            <h3 id="pickTitle">開く<small>実装では Windows 標準のダイアログ（複数選択可）</small></h3>
+            <div class="addr" id="pickPath"></div>
+            <div class="plist" id="pickList"></div>
+          </div>
+          <div class="d-foot">
+            <button class="btn" id="pickCancel" type="button">キャンセル</button>
+            <button class="btn primary" id="pickOk" type="button">開く</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 詳細（エラー時） -->
+      <div class="overlay" id="logOv" role="dialog" aria-modal="true" aria-labelledby="logTitle">
+        <div class="dialog wide">
+          <div class="d-body">
+            <h3 id="logTitle">詳細</h3>
+            <p class="d-msg" id="logMsg"></p>
+            <pre class="logbox" id="logBox"></pre>
+          </div>
+          <div class="d-foot"><button class="btn" id="logClose" type="button">閉じる</button></div>
+        </div>
+      </div>
+
+      <div class="toast" id="toast" role="status"></div>
+    </div>
+
+    <aside class="notes">
+      <h2>画面にあるのは 3 つだけ</h2>
+      <ul>
+        <li><strong>送るファイル</strong> — ＋（Windows 標準のダイアログで複数選択）、ドラッグ＆ドロップ、エクスプローラーでコピーして <kbd>Ctrl</kbd>+<kbd>V</kbd></li>
+        <li><strong>送り先</strong> — 上の欄はホスト名か「このPC」、下の欄はフォルダ。どちらも ▾ で履歴から選べます</li>
+        <li><strong>転送開始</strong></li>
+      </ul>
+
+      <h2>考え方</h2>
+      <ul>
+        <li>サーバーへ送るときは、フォルダ欄に <code>C:\Work</code> のようなサーバー上のパスを書くだけ（自動で <code>\\HOST\C$\Work</code> に変換）</li>
+        <li>共有フォルダへ送るときは、送り先を「このPC」にして <code>\\fs01\...</code> を書く（種類の切り替えは不要）</li>
+        <li><code>{datetime}</code> などはフォルダ欄にそのまま書きます。下の 1 行に、実際に送られる先のパスが出ます</li>
+        <li>接続状態やエラーも、送り先の下の 1 行と、ボタンの上の 1 行で表示します</li>
+        <li>左端の ● をクリックすると、接続するアカウントを変えられます</li>
+      </ul>
+
+      <h2>試せる操作</h2>
+      <ul>
+        <li>送り先を <code>SV-DB02</code> にする → ログオンが必要（パスワードに <code>wrong</code> と入れると失敗します）</li>
+        <li><code>SV-WEB01</code> へ転送 → アクセス拒否 → ［詳細］［ログオン…］</li>
+        <li>存在しないホスト名（<code>SV-TEST99</code>）を入れる → 接続できません</li>
+        <li>送り先を「このPC」にする → フォルダ欄が <code>D:\Transfer\{datetime}</code> に切り替わる</li>
+        <li>一覧へファイルをドロップ、<kbd>Delete</kbd> で削除、<kbd>Ctrl</kbd>+<kbd>Enter</kbd> で転送開始</li>
+      </ul>
+    </aside>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- helpers ----------
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => [...document.querySelectorAll(s)];
+  const W = (s) => s.replace(/\//g, '\\');          // '/' 区切りで書いたパスを Windows 形式に
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmtDate = (d, f) => f.replace(/yyyy|MM|dd|HH|mm|ss/g, (t) => ({
+    yyyy: d.getFullYear(), MM: pad(d.getMonth() + 1), dd: pad(d.getDate()),
+    HH: pad(d.getHours()), mm: pad(d.getMinutes()), ss: pad(d.getSeconds()),
+  })[t]);
+  const fmtSize = (mb) => !mb ? '—' : mb < 1 ? Math.max(1, Math.round(mb * 1024)) + ' KB' : mb < 1024 ? mb.toFixed(1) + ' MB' : (mb / 1024).toFixed(2) + ' GB';
+  const fmtSec = (s) => !isFinite(s) ? '—' : s < 60 ? Math.max(1, Math.ceil(s)) + ' 秒' : Math.floor(s / 60) + ' 分 ' + Math.ceil(s % 60) + ' 秒';
+  const total = (arr) => arr.reduce((a, f) => a + f.size, 0);
+
+  const svg = (p, w = 14) => `<svg viewBox="0 0 16 16" width="${w}" height="${w}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+  const ICON = {
+    plus: svg('<path d="M8 3v10M3 8h10"/>'),
+    chevron: svg('<path d="m4.5 6 3.5 3.5L11.5 6"/>', 12),
+    file: svg('<path d="M4 1.75h5l3.25 3.25v9.25H4z"/><path d="M9 1.75V5h3.25"/>'),
+    folder: '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.5 4c0-.6.4-1 1-1h3.7l1.5 1.5h5.8c.6 0 1 .4 1 1V12c0 .6-.4 1-1 1h-11c-.6 0-1-.4-1-1z" fill="#e3a92f"/><path d="M1.5 6.25h13V12c0 .6-.4 1-1 1h-11c-.6 0-1-.4-1-1z" fill="#f5c84c"/></svg>',
+    check: svg('<path d="m3 8.5 3.25 3.25L13 5"/>'),
+    x: svg('<path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/>', 12),
+    monitor: svg('<rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1"/><path d="M5.5 14h5M8 11v3"/>'),
+    server: svg('<rect x="2.25" y="2" width="11.5" height="5" rx="1"/><rect x="2.25" y="9" width="11.5" height="5" rx="1"/><path d="M4.75 4.5h1.5M4.75 11.5h1.5"/>'),
+    okCircle: svg('<circle cx="8" cy="8" r="6.25"/><path d="m5.25 8.25 1.9 1.9 3.6-3.9"/>'),
+    alert: svg('<circle cx="8" cy="8" r="6.25"/><path d="M8 4.75v3.75M8 11h.01"/>'),
+  };
+  $$('[data-icon]').forEach((el) => { el.outerHTML = ICON[el.dataset.icon]; });
+
+  // ---------- sample data ----------
+  const LOCAL = 'このPC';
+  const USER = 'yamada';
+  const DEST_OPTIONS = [LOCAL, 'SV-APP01', 'SV-WEB01', 'SV-DB02'];
+  const FOLDER_OPTIONS = {
+    server: [W('C:/Work/{datetime}'), W('C:/Work/{date}'), W('D:/Deploy/{datetime}')],
+    local: [W('D:/Transfer/{datetime}'), W('//fs01/work/yamada/{date}'), W('C:/Users/yamada/Downloads')],
+  };
+  const PICK_DIR = W('//fs01/patches/2026-10');
+  const PICK_FILES = [['KB5031234-x64.msu', 312.4], ['KB5031235-x64.msu', 98.7], ['KB5031240-x64.msu', 156.0], ['readme.txt', 0.004]];
+  const item = (dir, name, size, kind = 'file') => ({ dir, name, size, kind, local: !/^\\\\/.test(dir), path: dir + '\\' + name });
+  const sampleFiles = () => [
+    item(PICK_DIR, 'KB5031234-x64.msu', 312.4),
+    item(W('//fs01/release/app'), 'setup_v2.4.1.exe', 48.2),
+    item(W('C:/Users/yamada/Downloads'), 'config_20261015.zip', 2.1),
+  ];
+  const CLIP = item(W('//fs01/release/hotfix'), 'hotfix_20261015.zip', 5.6);
+
+  // サーバーの模擬状態: user があれば接続可。denied はそのユーザーでは C$ に書けない
+  const initHosts = () => ({
+    'SV-APP01': { user: W('SV-APP01/Administrator') },
+    'SV-WEB01': { user: W('CORP/yamada'), denied: true },
+    'SV-DB02': { user: null, lastUser: W('SV-DB02/Administrator') },
+  });
+  let HOSTS = initHosts();
+  const SPEED = { relay: 86, toServer: 104, toLocal: 112, toShare: 96, folder: 58 };  // MB/s（模擬）
+
+  const state = { files: [], sel: new Set(), status: 'empty', user: '', phase: 'idle', run: null };
+  const lastFolder = { server: W('C:/Work/{datetime}'), local: W('D:/Transfer/{datetime}') };
+  let destKind = 'server';
+  let timer = null, checkTimer = null, toastTimer = null, pendingStart = false;
+  const logLines = [];
+
+  // ---------- destination ----------
+  const isLocal = () => /^(この ?PC|localhost|\.)$/i.test($('#dest').value.trim());
+  const hostKey = () => $('#dest').value.trim().toUpperCase();
+  function expand(tpl, d) {
+    return tpl
+      .replace(/\{now:([^}]+)\}/g, (_, f) => fmtDate(d, f))
+      .replace(/\{datetime\}/g, fmtDate(d, 'yyyyMMdd_HHmm'))
+      .replace(/\{date\}/g, fmtDate(d, 'yyyyMMdd'))
+      .replace(/\{time\}/g, fmtDate(d, 'HHmm'))
+      .replace(/\{user\}/g, USER)
+      .replace(/\{host\}/g, isLocal() ? '' : hostKey());
+  }
+  // フォルダ欄 → 実際の送り先パス
+  function resolve(d) {
+    const raw = expand($('#folder').value.trim(), d).replace(/\\+$/, '');
+    if (!raw) return { err: 'フォルダを入力してください' };
+    if (/[/:*?"<>|]/.test(raw.replace(/^[A-Za-z]:/, ''))) return { err: 'フォルダ名に使えない文字があります（/ : * ? " < > |）' };
+    if (/^\\\\[^\\]+\\[^\\]+/.test(raw)) return { path: raw };
+    const m = /^([A-Za-z]):(\\.*)?$/.exec(raw);
+    if (!m) return { err: isLocal() ? 'D:\\… または \\\\サーバー\\共有\\… の形式で入力してください' : 'サーバー上のパスを C:\\Work のように入力してください' };
+    if (isLocal()) return { path: m[1].toUpperCase() + ':' + (m[2] || '\\') };
+    return { path: '\\\\' + hostKey() + '\\' + m[1].toUpperCase() + '$' + (m[2] || '') };
+  }
+  const reachable = () => isLocal() || state.status === 'ok' || state.status === 'auth';
+  const canStart = () => state.files.length > 0 && !resolve(new Date()).err && reachable() && state.phase !== 'running';
+
+  function setStatus(s, user) { state.status = s; state.user = user || ''; renderDest(); }
+  function checkHost(immediate) {
+    clearTimeout(checkTimer);
+    if (isLocal()) { setStatus('local'); return; }
+    const h = hostKey();
+    if (!h) { setStatus('empty'); return; }
+    const done = () => {
+      const info = HOSTS[h];
+      if (!info) setStatus('unreachable');
+      else if (!info.user) setStatus('auth');
+      else setStatus('ok', info.user);
+    };
+    if (immediate) { done(); return; }
+    setStatus('checking');
+    checkTimer = setTimeout(done, 700);
+  }
+
+  // ---------- render ----------
+  function rowState(f) {
+    const r = state.run;
+    if (!r || (state.phase !== 'running' && state.phase !== 'done')) return '';
+    const i = r.steps.findIndex((s) => s.f.path === f.path);
+    if (i < 0) return '';
+    if (i < r.i) return 'done';
+    return i === r.i && state.phase === 'running' ? 'cur' : '';
+  }
+  function renderFiles() {
+    const list = $('#list');
+    list.classList.toggle('locked', state.phase === 'running');
+    if (!state.files.length) {
+      list.innerHTML = '<div class="empty"><span class="big">ファイルをここにドロップ</span><span>または ＋ で選択、<kbd>Ctrl</kbd>+<kbd>V</kbd> で貼り付け</span></div>';
+    } else {
+      list.innerHTML = state.files.map((f) => {
+        const st = rowState(f);
+        const ic = st === 'done' ? ICON.check : st === 'cur' ? '<span class="spin"></span>' : f.kind === 'folder' ? ICON.folder : ICON.file;
+        return `<div class="frow ${st}${state.sel.has(f.path) ? ' sel' : ''}" data-path="${esc(f.path)}" title="${esc(f.path)}">` +
+          `<span class="ic">${ic}</span><span class="nm">${esc(f.name)}</span><span class="sz">${fmtSize(f.size)}</span>` +
+          `<button class="x" type="button" tabindex="-1" aria-label="${esc(f.name)} を外す">${ICON.x}</button></div>`;
+      }).join('');
+    }
+    $('#count').textContent = state.files.length ? `${state.files.length} 件・${fmtSize(total(state.files))}` : '';
+    $('#clear').hidden = !state.files.length || state.phase === 'running';
+    renderStart();
+  }
+
+  function renderDest() {
+    const local = isLocal();
+    const lead = $('#destIcon');
+    if (local) {
+      lead.innerHTML = ICON.monitor; lead.disabled = true; lead.title = 'この PC';
+    } else {
+      lead.innerHTML = `<i class="dot ${state.status}"></i>`;
+      lead.disabled = !hostKey() || state.phase === 'running';
+      lead.title = { ok: `接続OK：${state.user}（クリックでアカウントを変更）`, auth: 'ログオンが必要です', unreachable: '接続できません', checking: '確認中…', empty: '' }[state.status] || '';
+    }
+    const r = resolve(new Date());
+    const host = esc(hostKey());
+    let cls = '', html;
+    if (!local && state.status === 'empty') html = 'ホスト名を入力するか、▾ から選んでください';
+    else if (!local && state.status === 'checking') html = '接続を確認しています…';
+    else if (!local && state.status === 'unreachable') { cls = 'err'; html = `${host} に接続できません（ホスト名を確認してください）`; }
+    else if (r.err) { cls = 'err'; html = esc(r.err); }
+    else if (!local && state.status === 'auth') { cls = 'warn'; html = `${host} へのログオンが必要です<button class="link" type="button" data-act="login">ログオン…</button>`; }
+    else html = `→ <span class="path">${esc(r.path)}</span>`;
+    const hint = $('#hint');
+    hint.className = 'hint ' + cls;
+    hint.innerHTML = html;
+    $('#folderCombo').classList.toggle('invalid', !!r.err && !!$('#folder').value.trim());
+    renderStart();
+  }
+
+  function renderStart() { $('#start').disabled = !canStart(); }
+
+  function renderFoot() {
+    const ph = state.phase;
+    $('#start').hidden = ph === 'running';
+    $('#prog').hidden = ph !== 'running';
+    $('#result').hidden = ph !== 'done' && ph !== 'error';
+    if (ph !== 'running') return;
+    const r = state.run;
+    const doneMB = r.done + r.cur;
+    const pct = r.total ? (doneMB / r.total) * 100 : 0;
+    $('#bar').style.width = pct + '%';
+    $('#progText').textContent = r.speed ? `${Math.floor(pct)}%・${r.speed.toFixed(1)} MB/s・残り ${fmtSec((r.total - doneMB) / r.speed)}` : '接続しています…';
+    const cur = r.steps[r.i];
+    const row = cur && document.querySelector(`.frow[data-path="${CSS.escape(cur.f.path)}"]`);
+    if (row) row.style.setProperty('--p', (cur.f.size ? (r.cur / cur.f.size) * 100 : 100) + '%');
+  }
+
+  function setLocked(on) {
+    ['#dest', '#folder', '#add'].forEach((s) => { $(s).disabled = on; });
+    $$('.combo .chev').forEach((b) => { b.disabled = on; });
+    $$('.combo').forEach((c) => c.classList.toggle('disabled', on));
+  }
+
+  // ---------- log & toast ----------
+  function log(msg) { logLines.push(`[${fmtDate(new Date(), 'HH:mm:ss')}] ${msg}`); }
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.className = 'toast show';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.className = 'toast'; }, 3000);
+  }
+
+  // ---------- file list ----------
+  function leaveFinished() {
+    if (state.phase === 'done' || state.phase === 'error') { state.phase = 'idle'; state.run = null; renderFoot(); renderFiles(); }
+  }
+  function addItems(items) {
+    let added = 0;
+    const dup = [];
+    for (const it of items) {
+      if (state.files.some((f) => f.path === it.path)) continue;
+      if (state.files.some((f) => f.name.toLowerCase() === it.name.toLowerCase())) { dup.push(it.name); continue; }
+      state.files.push(it);
+      added++;
+    }
+    if (dup.length) toast(`同じ名前のファイルがあるため追加しませんでした：${dup.join('、')}`);
+    if (added) leaveFinished();
+    renderFiles();
+    return added;
+  }
+  function removePaths(paths) {
+    state.files = state.files.filter((f) => !paths.includes(f.path));
+    paths.forEach((p) => state.sel.delete(p));
+    leaveFinished();
+    renderFiles();
+  }
+
+  $('#list').addEventListener('click', (e) => {
+    if (state.phase === 'running') return;
+    const row = e.target.closest('.frow');
+    if (!row) { state.sel.clear(); renderFiles(); return; }
+    const p = row.dataset.path;
+    if (e.target.closest('.x')) { removePaths([p]); return; }
+    if (e.ctrlKey || e.metaKey) state.sel.has(p) ? state.sel.delete(p) : state.sel.add(p);
+    else state.sel = new Set([p]);
+    renderFiles();
+  });
+  $('#clear').onclick = () => removePaths(state.files.map((f) => f.path));
+
+  // drag & drop（ブラウザではフルパスが取れないため、場所は仮のパス）
+  const list = $('#list');
+  ['dragenter', 'dragover'].forEach((ev) => list.addEventListener(ev, (e) => { e.preventDefault(); if (state.phase !== 'running') list.classList.add('drag'); }));
+  list.addEventListener('dragleave', (e) => { if (!list.contains(e.relatedTarget)) list.classList.remove('drag'); });
+  list.addEventListener('drop', (e) => {
+    e.preventDefault();
+    list.classList.remove('drag');
+    if (state.phase === 'running') return;
+    const dir = W('C:/Users/yamada/Desktop');
+    const out = [];
+    [...e.dataTransfer.items].filter((it) => it.kind === 'file').forEach((it) => {
+      const f = it.getAsFile();
+      if (!f) return;
+      const entry = it.webkitGetAsEntry ? it.webkitGetAsEntry() : null;
+      const isDir = !!(entry && entry.isDirectory);
+      out.push(item(dir, f.name, isDir ? 0 : f.size / 1048576, isDir ? 'folder' : 'file'));
+    });
+    if (out.length) addItems(out);
+  });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => e.preventDefault());
+
+  // ---------- picker (Windows 標準ダイアログのイメージ) ----------
+  const pickSel = new Set();
+  function openPicker() {
+    pickSel.clear();
+    $('#pickPath').textContent = PICK_DIR;
+    $('#pickList').innerHTML = PICK_FILES.map(([name, size], i) =>
+      `<div class="prow" data-i="${i}"><input type="checkbox" tabindex="-1" aria-label="${esc(name)}">${ICON.file}<span class="nm">${esc(name)}</span><span class="sz">${fmtSize(size)}</span></div>`).join('');
+    updatePick();
+    $('#pickOv').classList.add('open');
+  }
+  function updatePick() {
+    $$('#pickList .prow').forEach((r) => {
+      const on = pickSel.has(+r.dataset.i);
+      r.classList.toggle('sel', on);
+      r.querySelector('input').checked = on;
+    });
+    $('#pickOk').disabled = !pickSel.size;
+  }
+  const closePick = () => $('#pickOv').classList.remove('open');
+  function commitPick(indices) {
+    closePick();
+    addItems(indices.map((i) => item(PICK_DIR, ...PICK_FILES[i])));
+  }
+  $('#pickList').addEventListener('click', (e) => {
+    const r = e.target.closest('.prow');
+    if (!r) return;
+    const i = +r.dataset.i;
+    pickSel.has(i) ? pickSel.delete(i) : pickSel.add(i);
+    updatePick();
+  });
+  $('#pickList').addEventListener('dblclick', (e) => { const r = e.target.closest('.prow'); if (r) commitPick([+r.dataset.i]); });
+  $('#pickOk').onclick = () => commitPick([...pickSel].sort((a, b) => a - b));
+  $('#pickCancel').onclick = closePick;
+  $('#add').onclick = openPicker;
+
+  // ---------- combos ----------
+  function closeMenus() { $$('.combo .menu').forEach((m) => { m.hidden = true; }); }
+  function openMenu(combo) {
+    const input = combo.querySelector('input');
+    const menu = combo.querySelector('.menu');
+    const isDest = combo.id === 'destCombo';
+    const opts = isDest ? DEST_OPTIONS : FOLDER_OPTIONS[destKind];
+    menu.innerHTML = opts.map((o) => `<li data-v="${esc(o)}"${o.toUpperCase() === input.value.trim().toUpperCase() ? ' class="on"' : ''}>` +
+      (isDest ? (o === LOCAL ? ICON.monitor : ICON.server) : '') + `<span${isDest ? '' : ' class="mono"'}>${esc(o)}</span></li>`).join('');
+    menu.hidden = false;
+  }
+  $$('.combo').forEach((combo) => {
+    const menu = combo.querySelector('.menu');
+    combo.querySelector('.chev').addEventListener('click', () => {
+      const wasOpen = !menu.hidden;
+      closeMenus();
+      if (!wasOpen) openMenu(combo);
+    });
+    menu.addEventListener('click', (e) => {
+      const li = e.target.closest('li');
+      if (!li) return;
+      const input = combo.querySelector('input');
+      input.value = li.dataset.v;
+      closeMenus();
+      input.dispatchEvent(new Event('input'));
+      input.focus();
+    });
+  });
+  document.addEventListener('mousedown', (e) => { if (!e.target.closest('.combo')) closeMenus(); });
+
+  $('#dest').addEventListener('input', () => {
+    const kind = isLocal() ? 'local' : 'server';
+    if (kind !== destKind) {            // 送り先の種類が変わったら、その種類で前回使ったフォルダに戻す
+      lastFolder[destKind] = $('#folder').value;
+      $('#folder').value = lastFolder[kind];
+      destKind = kind;
+    }
+    leaveFinished();
+    checkHost();
+  });
+  $('#folder').addEventListener('input', () => { leaveFinished(); renderDest(); });
+  $('#destIcon').addEventListener('click', openCred);
+
+  // ---------- credentials ----------
+  function openCred() {
+    const h = hostKey();
+    if (!h || isLocal()) return;
+    const info = HOSTS[h];
+    $('#credTitle').textContent = `${h} にログオン`;
+    $('#credUser').value = (info && info.user) || (info && info.lastUser) || '';
+    $('#credUser').placeholder = `${h}\\ユーザー名 または CORP\\ユーザー名`;
+    $('#credPass').value = '';
+    $('#credErr').hidden = true;
+    $('#credSave').checked = true;
+    $('#credOk').disabled = false;
+    $('#credOk').textContent = 'OK';
+    $('#credOv').classList.add('open');
+    setTimeout(() => ($('#credUser').value ? $('#credPass') : $('#credUser')).focus(), 30);
+  }
+  function closeCred() { $('#credOv').classList.remove('open'); pendingStart = false; }
+  function credError(msg) { $('#credErr').textContent = msg; $('#credErr').hidden = false; }
+  $('#credForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const h = hostKey(), user = $('#credUser').value.trim(), pass = $('#credPass').value;
+    if (!user) return credError('ユーザー名を入力してください。');
+    if (!pass) return credError('パスワードを入力してください。');
+    const ok = $('#credOk');
+    ok.disabled = true;
+    ok.textContent = '接続中…';
+    $('#credErr').hidden = true;
+    setTimeout(() => {
+      ok.disabled = false;
+      ok.textContent = 'OK';
+      if (!HOSTS[h]) return credError(`${h} に接続できません。`);
+      if (pass === 'wrong') return credError('ユーザー名またはパスワードが正しくありません。');
+      const prev = HOSTS[h];
+      HOSTS[h] = { ...prev, user, denied: !!prev.denied && prev.user && prev.user.toUpperCase() === user.toUpperCase() };
+      const resume = pendingStart;
+      closeCred();
+      setStatus('ok', user);
+      log(`${h} に ${user} でログオン${$('#credSave').checked ? '（資格情報を保存）' : ''}`);
+      if (resume || state.phase === 'error') { leaveFinished(); startTransfer(); }
+    }, 600);
+  });
+  $('#credCancel').onclick = closeCred;
+
+  // ---------- transfer (simulated) ----------
+  function logGroup(i) {
+    const st = state.run.steps, s = st[i], prev = st[i - 1];
+    if (prev && prev.f.dir === s.f.dir && s.f.kind === 'file' && prev.f.kind === 'file') return;
+    if (s.f.kind === 'folder') { log(`robocopy "${s.f.path}" "${state.run.dest}\\${s.f.name}" /E /MT:8 /R:2 /W:3`); return; }
+    const group = [];
+    for (let j = i; j < st.length && st[j].f.dir === s.f.dir && st[j].f.kind === 'file'; j++) group.push(st[j].f);
+    log(`robocopy "${s.f.dir}" "${state.run.dest}" ${group.map((f) => `"${f.name}"`).join(' ')} /R:2 /W:3${group.some((f) => f.size >= 256) ? ' /J' : ''}`);
+  }
+
+  function startTransfer() {
+    if (!canStart()) return;
+    if (!isLocal() && state.status === 'auth') { pendingStart = true; openCred(); return; }
+    const now = new Date();
+    const dest = resolve(now).path;
+    const local = isLocal();
+    // 親フォルダごとにまとめて順に送る（robocopy は 1 回につき 1 フォルダ → 1 フォルダ）
+    const dirs = [...new Set(state.files.map((f) => f.dir))];
+    const files = dirs.flatMap((d) => state.files.filter((f) => f.dir === d));
+    state.files = files;
+    const steps = files.map((f) => ({
+      f,
+      speed: f.kind === 'folder' ? SPEED.folder : !local ? (f.local ? SPEED.toServer : SPEED.relay) : /^\\\\/.test(dest) ? SPEED.toShare : SPEED.toLocal,
+    }));
+    state.run = { steps, i: 0, cur: 0, done: 0, total: total(files), t0: performance.now(), last: 0, dest, speed: 0, host: local ? null : hostKey() };
+    state.phase = 'running';
+    state.sel.clear();
+    logLines.length = 0;
+    log(`転送開始：${files.length} 件（${fmtSize(state.run.total)}）→ ${dest}`);
+    logGroup(0);
+    setLocked(true);
+    renderFiles();
+    renderDest();
+    renderFoot();
+    timer = setInterval(tick, 100);
+  }
+
+  function tick() {
+    const r = state.run;
+    const now = performance.now();
+    if (now - r.t0 < 300) { renderFoot(); return; }             // 接続確立の間
+    if (r.host && HOSTS[r.host] && HOSTS[r.host].denied) { fail('denied'); return; }
+    const dt = Math.min((now - (r.last || r.t0 + 300)) / 1000, 1);  // タブが裏にあってタイマーが間引かれても実時間で進める
+    r.last = now;
+    const inst = r.steps[r.i].speed * (0.85 + Math.random() * 0.3);
+    r.speed = r.speed ? r.speed * 0.8 + inst * 0.2 : inst;
+    let budget = inst * dt;
+    let advanced = false;
+    while (budget > 0 && r.i < r.steps.length) {
+      const cur = r.steps[r.i], remain = cur.f.size - r.cur;
+      if (budget >= remain) {
+        budget -= remain;
+        r.done += cur.f.size;
+        r.cur = 0;
+        log(`  完了：${cur.f.name}（${fmtSize(cur.f.size)}）`);
+        r.i++;
+        advanced = true;
+        if (r.i < r.steps.length) logGroup(r.i);
+      } else {
+        r.cur += budget;
+        budget = 0;
+      }
+    }
+    if (r.i >= r.steps.length) { finish(); return; }
+    if (advanced) renderFiles();
+    renderFoot();
+  }
+
+  function stop() { clearInterval(timer); timer = null; setLocked(false); }
+
+  function finish(fakeSec) {
+    stop();
+    const r = state.run;
+    r.i = r.steps.length;
+    const sec = fakeSec != null ? fakeSec : (performance.now() - r.t0) / 1000;
+    state.phase = 'done';
+    log(`終了コード 1（成功）／${sec.toFixed(1)} 秒`);
+    $('#result').className = 'result ok';
+    $('#result').innerHTML = `${ICON.okCircle}<span>${r.steps.length} 件を転送しました（${fmtSize(r.total)}・${sec.toFixed(1)} 秒）</span><span class="sp"></span>` +
+      '<button class="link" type="button" data-act="open">開く</button>' +
+      (r.host ? '<button class="link" type="button" data-act="rdp">RDP</button>' : '');
+    renderFiles();
+    renderDest();
+    renderFoot();
+  }
+
+  const ERRORS = {
+    denied: (h) => ({
+      short: `${h}：アクセスが拒否されました`,
+      detail: `${h} の C$ への書き込みが拒否されました（エラー 5）。\n管理者権限のあるアカウントか確認してください。ローカルアカウントの場合、組み込みの Administrator 以外は管理共有（C$）に接続できないことがあります。\n［ログオン…］から別のアカウントで接続し直せます。`,
+    }),
+  };
+  let lastError = null;
+  function fail(kind) {
+    stop();
+    lastError = ERRORS[kind](state.run.host);
+    state.phase = 'error';
+    log(`エラー：${lastError.short}`);
+    $('#result').className = 'result err';
+    $('#result').innerHTML = `${ICON.alert}<span>${esc(lastError.short)}</span><span class="sp"></span>` +
+      '<button class="link" type="button" data-act="login">ログオン…</button><button class="link" type="button" data-act="detail">詳細</button>';
+    renderFiles();
+    renderDest();
+    renderFoot();
+  }
+
+  function cancelTransfer() {
+    const s = state.run.steps[state.run.i];
+    stop();
+    log(`中止しました（${s.f.name} の途中）`);
+    state.phase = 'idle';
+    state.run = null;
+    toast(`中止しました。送り先に途中までの ${s.f.name} が残っている可能性があります`);
+    renderFiles();
+    renderDest();
+    renderFoot();
+  }
+
+  function openLog() {
+    $('#logMsg').textContent = lastError ? lastError.detail : '';
+    $('#logBox').textContent = logLines.join('\n');
+    $('#logOv').classList.add('open');
+  }
+  const closeLog = () => $('#logOv').classList.remove('open');
+  $('#logClose').onclick = closeLog;
+
+  $('#start').onclick = startTransfer;
+  $('#cancel').onclick = cancelTransfer;
+  $('#win').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === 'login') openCred();
+    else if (act === 'detail') openLog();
+    else if (act === 'open') toast(`エクスプローラーで ${state.run.dest} を開きます（モック）`);
+    else if (act === 'rdp') toast(`mstsc /v:${state.run.host} を起動します（モック）`);
+  });
+
+  // ---------- keyboard ----------
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeMenus(); closeCred(); closePick(); closeLog(); return; }
+    const overlay = $$('.overlay').some((o) => o.classList.contains('open'));
+    const typing = e.target instanceof Element && e.target.closest('input, textarea, select');
+    if (overlay || typing || state.phase === 'running') {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !overlay) startTransfer();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
+      e.preventDefault();
+      if (addItems([CLIP])) toast('エクスプローラーでコピーしたファイルを貼り付けました（模擬）');
+    } else if (e.key === 'Delete' && state.sel.size) {
+      removePaths([...state.sel]);
+    } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      startTransfer();
+    }
+  });
+
+  // ---------- demo states ----------
+  function reset() {
+    clearInterval(timer); timer = null; clearTimeout(checkTimer);
+    closeMenus(); closeCred(); closePick(); closeLog();
+    HOSTS = initHosts();
+    Object.assign(state, { files: [], sel: new Set(), phase: 'idle', run: null });
+    lastError = null;
+    logLines.length = 0;
+    setLocked(false);
+    destKind = 'server';
+    lastFolder.server = W('C:/Work/{datetime}');
+    lastFolder.local = W('D:/Transfer/{datetime}');
+    $('#dest').value = 'SV-APP01';
+    $('#folder').value = lastFolder.server;
+  }
+  const DEMOS = {
+    initial() {},
+    selected() { state.files = sampleFiles(); },
+    auth() { state.files = sampleFiles(); $('#dest').value = 'SV-DB02'; },
+    running() { state.files = sampleFiles(); },
+    done() { state.files = sampleFiles(); },
+    error() { state.files = sampleFiles(); $('#dest').value = 'SV-WEB01'; },
+  };
+  function runDemo(name) {
+    reset();
+    DEMOS[name]();
+    checkHost(true);
+    renderFiles();
+    renderFoot();
+    if (name === 'auth') openCred();
+    if (name === 'running') startTransfer();
+    if (name === 'done') { startTransfer(); state.run.steps.forEach((s) => log(`  完了：${s.f.name}`)); state.run.done = state.run.total; finish(4.3); }
+    if (name === 'error') { startTransfer(); fail('denied'); }
+    $$('.demo button').forEach((b) => b.classList.toggle('on', b.dataset.demo === name));
+  }
+  $$('.demo button').forEach((b) => { b.onclick = () => runDemo(b.dataset.demo); });
+
+  setInterval(() => { if (state.phase !== 'running') renderDest(); }, 10000);   // 日時のプレビュー更新
+  runDemo('selected');
+})();
+</script>
+</body>
+</html>

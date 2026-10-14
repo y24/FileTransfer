@@ -1,0 +1,170 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="FileTransfer" Width="400" Height="460" MinWidth="400" MaxWidth="400" MinHeight="420"
+        WindowStartupLocation="CenterScreen" ResizeMode="CanResize"
+        Background="#F9F9F9" Foreground="{StaticResource TextBrush}"
+        FontFamily="Segoe UI, Yu Gothic UI, Meiryo UI" FontSize="12.5"
+        AllowDrop="True" UseLayoutRounding="True" SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display">
+  <Grid Margin="14,8,14,14">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <!-- 送るファイル -->
+    <Grid Grid.Row="0" Margin="0,0,0,4">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <TextBlock Text="送るファイル" FontWeight="SemiBold" VerticalAlignment="Center"/>
+      <TextBlock x:Name="CountText" Grid.Column="1" Margin="8,0,0,0" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+      <Button x:Name="ClearButton" Grid.Column="2" Style="{StaticResource LinkButton}" Content="クリア" Margin="0,0,6,0" Visibility="Collapsed"/>
+      <Button x:Name="AddButton" Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="ファイルを追加"/>
+    </Grid>
+
+    <Border Grid.Row="1" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="4" Background="White" MinHeight="96">
+      <Grid>
+        <ListBox x:Name="FileList" BorderThickness="0" Background="Transparent" SelectionMode="Extended"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
+          <ListBox.ItemContainerStyle>
+            <Style TargetType="ListBoxItem">
+              <Setter Property="Padding" Value="0"/>
+              <Setter Property="Template">
+                <Setter.Value>
+                  <ControlTemplate TargetType="ListBoxItem">
+                    <Border x:Name="Bd" Background="Transparent" Height="28">
+                      <ContentPresenter/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="Bd" Property="Background" Value="{StaticResource RowHoverBrush}"/>
+                      </Trigger>
+                      <Trigger Property="IsSelected" Value="True">
+                        <Setter TargetName="Bd" Property="Background" Value="{StaticResource SelectedBrush}"/>
+                      </Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </Setter.Value>
+              </Setter>
+            </Style>
+          </ListBox.ItemContainerStyle>
+          <ListBox.ItemTemplate>
+            <DataTemplate>
+              <Grid ToolTip="{Binding ToolTipText}" Background="Transparent">
+                <!-- 転送中の行は、背景がそのファイルの進捗バーになる -->
+                <Rectangle x:Name="Fill" Fill="{StaticResource AccentSoftBrush}" RenderTransformOrigin="0,0.5" Visibility="Collapsed">
+                  <Rectangle.RenderTransform>
+                    <ScaleTransform ScaleX="{Binding Progress}"/>
+                  </Rectangle.RenderTransform>
+                </Rectangle>
+                <Grid Margin="10,0,4,0">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="16"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="24"/>
+                  </Grid.ColumnDefinitions>
+                  <TextBlock x:Name="Icon" FontFamily="{StaticResource IconFont}" Text="{Binding Glyph}" FontSize="13"
+                             Foreground="{StaticResource FaintBrush}" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="1" Text="{Binding Name}" Margin="8,0" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+                  <TextBlock Grid.Column="2" Text="{Binding SizeText}" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                  <Button x:Name="RemoveButton" Grid.Column="3" Style="{StaticResource RowButton}" Content="&#xE711;" Tag="remove"
+                          HorizontalAlignment="Right" Visibility="Hidden" ToolTip="一覧から外す"/>
+                </Grid>
+              </Grid>
+              <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding State}" Value="cur">
+                  <Setter TargetName="Fill" Property="Visibility" Value="Visible"/>
+                  <Setter TargetName="Icon" Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding State}" Value="done">
+                  <Setter TargetName="Icon" Property="Foreground" Value="{StaticResource OkBrush}"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                  <Setter TargetName="RemoveButton" Property="Visibility" Value="Visible"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                  <Setter TargetName="RemoveButton" Property="Visibility" Value="Visible"/>
+                </DataTrigger>
+                <!-- 転送中は × を出さない -->
+                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=ListBox}}" Value="locked">
+                  <Setter TargetName="RemoveButton" Property="Visibility" Value="Hidden"/>
+                </DataTrigger>
+              </DataTemplate.Triggers>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <StackPanel x:Name="EmptyHint" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+          <TextBlock Text="ファイルをここにドロップ" HorizontalAlignment="Center"/>
+          <TextBlock Text="または ＋ で選択、Ctrl+V で貼り付け" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- 送り先 -->
+    <TextBlock Grid.Row="2" Text="送り先" FontWeight="SemiBold" Margin="0,14,0,4"/>
+
+    <Grid Grid.Row="3">
+      <ComboBox x:Name="DestBox" IsEditable="True" IsTextSearchEnabled="False" Height="30"
+                Padding="26,0,4,0" VerticalContentAlignment="Center" ToolTip="ホスト名、または「このPC」"/>
+      <Button x:Name="DestBadge" Style="{StaticResource BadgeButton}" HorizontalAlignment="Left" Width="26" Margin="1,2">
+        <Grid>
+          <Ellipse x:Name="DestDot" Width="9" Height="9" Fill="{StaticResource IdleDotBrush}" StrokeThickness="1.5"/>
+          <TextBlock x:Name="DestPcIcon" FontFamily="{StaticResource IconFont}" Text="&#xE7F4;" FontSize="13"
+                     Foreground="{StaticResource MutedBrush}" Visibility="Collapsed"/>
+        </Grid>
+      </Button>
+    </Grid>
+
+    <ComboBox x:Name="FolderBox" Grid.Row="4" Margin="0,6,0,0" IsEditable="True" IsTextSearchEnabled="False" Height="30"
+              Padding="6,0,4,0" VerticalContentAlignment="Center" FontFamily="{StaticResource MonoFont}" FontSize="12"
+              ToolTip="送り先のフォルダ。{datetime} {date} などが使えます"/>
+
+    <TextBlock x:Name="HintText" Grid.Row="5" Margin="0,5,0,0" TextWrapping="Wrap" FontSize="12" MinHeight="18"
+               Foreground="{StaticResource MutedBrush}"/>
+
+    <!-- 結果の行（完了・エラー・お知らせ） -->
+    <Grid x:Name="ResultPanel" Grid.Row="6" Margin="0,10,0,0" Visibility="Collapsed">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <TextBlock x:Name="ResultIcon" FontFamily="{StaticResource IconFont}" FontSize="13" VerticalAlignment="Center" Margin="0,0,6,0"/>
+      <TextBlock x:Name="ResultText" Grid.Column="1" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+      <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="4,0,0,0">
+        <Button x:Name="OpenLink" Style="{StaticResource LinkButton}" Content="開く" ToolTip="エクスプローラーで送り先を開く"/>
+        <Button x:Name="RdpLink" Style="{StaticResource LinkButton}" Content="RDP" ToolTip="リモートデスクトップで接続"/>
+        <Button x:Name="LogonLink" Style="{StaticResource LinkButton}" Content="ログオン…"/>
+        <Button x:Name="DetailLink" Style="{StaticResource LinkButton}" Content="詳細"/>
+      </StackPanel>
+    </Grid>
+
+    <!-- 転送開始（転送中は全体の進捗と［中止］に置き換わる） -->
+    <Grid Grid.Row="7" Margin="0,10,0,0" Height="38">
+      <Button x:Name="StartButton" Style="{StaticResource PrimaryButton}" Height="36" FontSize="13" FontWeight="SemiBold"
+              Content="転送開始" VerticalAlignment="Bottom" ToolTip="Ctrl+Enter"/>
+      <Grid x:Name="ProgressPanel" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+        <ProgressBar x:Name="TotalProgress" Style="{StaticResource SlimProgress}" Minimum="0" Maximum="1"/>
+        <Grid Grid.Row="1" Margin="0,4,0,0">
+          <TextBlock x:Name="ProgressText" Foreground="{StaticResource MutedBrush}" FontSize="12" VerticalAlignment="Center"/>
+          <Button x:Name="CancelButton" Style="{StaticResource StandardButton}" Content="中止" Height="26" MinWidth="60" HorizontalAlignment="Right"/>
+        </Grid>
+      </Grid>
+    </Grid>
+  </Grid>
+</Window>

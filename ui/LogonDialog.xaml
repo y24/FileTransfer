@@ -1,0 +1,33 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ログオン" Width="320" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="White" Foreground="{StaticResource TextBrush}"
+        FontFamily="Segoe UI, Yu Gothic UI, Meiryo UI" FontSize="12.5"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <StackPanel Margin="18,14,18,14">
+      <TextBlock x:Name="Heading" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,12" TextWrapping="Wrap"/>
+      <TextBlock Text="ユーザー名" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,3"/>
+      <Grid>
+        <TextBox x:Name="UserBox" Style="{StaticResource FieldTextBox}"/>
+        <TextBlock x:Name="UserPlaceholder" Margin="7,0,0,0" VerticalAlignment="Center" Foreground="#A0A0A0" IsHitTestVisible="False"/>
+      </Grid>
+      <TextBlock Text="パスワード" Foreground="{StaticResource MutedBrush}" Margin="0,10,0,3"/>
+      <PasswordBox x:Name="PassBox" Style="{StaticResource FieldPasswordBox}"/>
+      <TextBlock x:Name="ErrorText" Foreground="{StaticResource ErrorBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
+      <CheckBox x:Name="SaveBox" Content="資格情報を保存する" IsChecked="True" Margin="0,12,0,0"
+                ToolTip="Windows の資格情報マネージャーに保存し、次回から入力を省きます"/>
+    </StackPanel>
+    <Border Grid.Row="1" Background="#F3F3F3" BorderBrush="#E3E3E3" BorderThickness="0,1,0,0" Padding="18,10">
+      <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+        <Button x:Name="CancelButton" Style="{StaticResource StandardButton}" Content="キャンセル" IsCancel="True" MinWidth="84" Margin="0,0,8,0"/>
+        <Button x:Name="OkButton" Style="{StaticResource PrimaryButton}" Content="OK" IsDefault="True" MinWidth="84"/>
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>

@@ -1,0 +1,10 @@
+{
+  "history": {
+    "destinations": [],
+    "serverFolders": ["C:\\Work\\{datetime}", "C:\\Work\\{date}"]
+  },
+  "serverShareMappings": [],
+  "transfer": {
+    "keepLocalCopy": false
+  }
+}
