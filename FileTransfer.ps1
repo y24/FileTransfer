@@ -33,6 +33,9 @@
 .PARAMETER DisconnectExisting
     （コマンドライン）サーバーに別のユーザーで接続中（エラー 1219）なら、その接続を切断してからログオンし直す
 
+.PARAMETER Method
+    （コマンドライン）サーバーへの転送方法。SMB（ファイル共有）または WinRM（PowerShell リモート）。省略すると設定画面で選んだ方法
+
 .PARAMETER NoShow
     画面を表示せずに初期化だけ行う（tests\ から読み込むため）
 
@@ -52,6 +55,7 @@ param(
     [Parameter(ParameterSetName = 'Cli')][switch]$KeepLocalCopy,
     [Parameter(ParameterSetName = 'Cli')][switch]$SkipSpaceCheck,
     [Parameter(ParameterSetName = 'Cli')][switch]$DisconnectExisting,
+    [Parameter(ParameterSetName = 'Cli')][ValidateSet('SMB', 'WinRM')][string]$Method,
     [Parameter(ParameterSetName = 'Gui')][switch]$NoShow
 )
 
@@ -100,7 +104,7 @@ function Import-FtTypes {
 }
 
 Import-FtTypes
-$script:ModulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'Distribution', 'Log', 'Cli') |
+$script:ModulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'WinRm', 'Distribution', 'Log', 'Cli') |
     ForEach-Object { Join-Path $script:AppRoot "lib\$_.psm1" }
 foreach ($modulePath in $script:ModulePaths) { Import-Module $modulePath -Force -DisableNameChecking }
 
@@ -111,7 +115,7 @@ Remove-FtOldLogs -RetentionDays ([int]$script:Config.log.retentionDays)
 if ($script:IsCli) {
     $code = Invoke-FtCli -Source $Source -Destination $Destination -Folder $Folder -Credential $Credential `
         -SaveCredential:$SaveCredential -KeepLocalCopy:$KeepLocalCopy -PlanOnly:$script:PlanOnly `
-        -SkipSpaceCheck:$SkipSpaceCheck -DisconnectExisting:$DisconnectExisting `
+        -SkipSpaceCheck:$SkipSpaceCheck -DisconnectExisting:$DisconnectExisting -Method $Method `
         -Config $script:Config -ModulePaths $script:ModulePaths
     exit $code
 }
@@ -161,6 +165,7 @@ $script:LastFolder = @{
 }
 $script:HostAlias = @{}                 # ホスト名 → 実際に接続した名前（FQDN など）
 $script:SessionUsers = @{}              # ホスト名 → このセッションでログオンしたユーザー
+$script:SessionCreds = @{}              # ホスト名 → このセッションでログオンした資格情報（WinRM 用。SMB は Windows が接続を覚えている）
 $script:Connections = New-Object System.Collections.Generic.List[string]
 $script:Run = $null
 $script:RunLog = New-Object System.Collections.Generic.List[string]
@@ -179,7 +184,8 @@ $script:Jobs = New-Object System.Collections.ArrayList
 
 $window = Read-FtXaml 'MainWindow.xaml'
 $ui = Get-FtNamedElements $window @(
-    'CountText', 'ClearButton', 'AddButton', 'FileList', 'EmptyHint',
+    'CountText', 'ClearButton', 'AddFolderButton', 'AddButton', 'FileList', 'EmptyHint',
+    'MethodBadge', 'MethodText', 'SettingsButton',
     'DestBox', 'DestBadge', 'DestDot', 'DestPcIcon', 'FolderBox', 'HintText',
     'ResultPanel', 'ResultIcon', 'ResultText', 'OpenLink', 'RdpLink', 'DisconnectLink', 'LogonLink', 'DetailLink',
     'StartButton', 'ProgressPanel', 'TotalProgress', 'ProgressText', 'CancelButton')
@@ -231,27 +237,32 @@ function Update-FtJobs {
 
 function Get-FtDestText { "$($ui.DestBox.Text)".Trim() }
 function Get-FtFolderText { "$($ui.FolderBox.Text)".Trim() }
-function Get-FtDestKey { (Format-FtDestinations (Split-FtDestinations (Get-FtDestText))) + '|' + (Get-FtFolderText) }
+# サーバーへの転送方法（smb | winrm。設定画面で切り替える）
+function Get-FtMethod { Get-FtTransferMethod $script:Config }
+function Get-FtDestKey { (Format-FtDestinations (Split-FtDestinations (Get-FtDestText))) + '|' + (Get-FtFolderText) + '|' + (Get-FtMethod) }
 
 function Resolve-FtCurrent {
     param([datetime]$Now = (Get-Date))
     return Resolve-FtDestinations -Destination (Get-FtDestText) -Folder (Get-FtFolderText) -Now $Now `
-        -Mappings @($script:Config.serverShareMappings) -HostAlias $script:HostAlias
+        -Mappings @($script:Config.serverShareMappings) -HostAlias $script:HostAlias -Method (Get-FtMethod)
 }
 
 # 接続確認の対象（@{ HostName; Root }）。フォルダ欄が正しくないときも、ホストの確認はしておく
+# Root は SMB なら確認する共有（\\HOST\C$）。WinRM はフォルダによらないので winrm:HOST
 function Get-FtCheckTargets {
     param($Resolved = (Resolve-FtCurrent))
     if ($Resolved.IsLocal) { return @() }
+    $winrm = (Get-FtMethod) -eq 'winrm'
     if (-not $Resolved.Error -and $Resolved.Targets.Count -gt 0) {
-        return @($Resolved.Targets | ForEach-Object { @{ HostName = $_.HostName; Root = $_.ShareRoot } })
+        return @($Resolved.Targets | ForEach-Object { @{ HostName = $_.HostName; Root = $(if ($winrm) { "winrm:$($_.HostName)" } else { $_.ShareRoot }) } })
     }
     $list = @()
     foreach ($name in $Resolved.Names) {
         $hostName = $name.ToUpperInvariant()
         if (-not (Test-FtHostName $hostName)) { continue }
         $connectName = if ($script:HostAlias.ContainsKey($hostName)) { $script:HostAlias[$hostName] } else { $hostName }
-        $list += @{ HostName = $hostName; Root = "\\$connectName\C`$" }
+        $root = if ($winrm) { "winrm:$hostName" } else { "\\$connectName\C`$" }
+        $list += @{ HostName = $hostName; Root = $root }
     }
     return $list
 }
@@ -260,7 +271,14 @@ function Get-FtCheck {
     param([string]$HostName)
     $check = $script:Checks[$HostName]
     if ($check) { return $check }
-    return @{ Status = 'checking'; Code = 0; User = ''; Root = '' }
+    return @{ Status = 'checking'; Code = 0; User = ''; Root = ''; Message = '' }
+}
+
+# WinRM で使う資格情報: このセッションでログオンしたもの > 保存済みのもの > なし（Windows のログオンユーザーで接続）
+function Get-FtWinRmCredential {
+    param([string]$HostName)
+    if ($script:SessionCreds.ContainsKey($HostName)) { return $script:SessionCreds[$HostName] }
+    return Get-FtWinRmSavedCredential $HostName
 }
 
 # 状態ごとのホスト名
@@ -291,7 +309,7 @@ function Get-FtStatusText {
         'checking'    { '確認中…' }
         'unreachable' { '接続できません' }
         'noshare'     { '共有が見つかりません' }
-        default       { "確認でエラーが発生しました（エラー $($Check.Code)）" }
+        default       { if ($Check.Message) { "確認でエラーが発生しました（$($Check.Message)）" } else { "確認でエラーが発生しました（エラー $($Check.Code)）" } }
     }
 }
 
@@ -299,7 +317,7 @@ function Get-FtStatusText {
 function Get-FtHostUser {
     param([string]$HostName)
     if ($script:SessionUsers.ContainsKey($HostName)) { return $script:SessionUsers[$HostName] }
-    $saved = Get-FtSavedUser $HostName
+    $saved = if ((Get-FtMethod) -eq 'winrm') { Get-FtWinRmSavedUser $HostName } else { Get-FtSavedUser $HostName }
     if ($saved) { return $saved }
     return Get-FtCurrentUser
 }
@@ -352,7 +370,7 @@ function Request-FtHostCheck {
     $script:CheckSeq++
     $targets = Get-FtCheckTargets
     $script:Checks = @{}
-    foreach ($target in $targets) { $script:Checks[$target.HostName] = @{ Status = 'checking'; Code = 0; User = ''; Root = $target.Root } }
+    foreach ($target in $targets) { $script:Checks[$target.HostName] = @{ Status = 'checking'; Code = 0; User = ''; Root = $target.Root; Message = '' } }
     if ($targets.Count -gt 0) {
         if ($Immediate) { Invoke-FtHostCheck } else { $script:CheckTimer.Start() }
     }
@@ -360,14 +378,23 @@ function Request-FtHostCheck {
 }
 
 # サーバーごとに並列で確認する
+#   SMB: 445 番ポートと共有（\\HOST\C$）にアクセスできるか
+#   WinRM: PowerShell リモートで接続できるか（保存済みの資格情報があれば、そのアカウントで）
 function Invoke-FtHostCheck {
     $targets = Get-FtCheckTargets
     $seq = ++$script:CheckSeq
     $script:Checks = @{}
+    $winrm = (Get-FtMethod) -eq 'winrm'
     foreach ($target in $targets) {
-        $script:Checks[$target.HostName] = @{ Status = 'checking'; Code = 0; User = ''; Root = $target.Root }
-        Start-FtJob -Script 'param($ShareRoot) Test-FtShareAccess -ShareRoot $ShareRoot' -Parameters @{ ShareRoot = $target.Root } `
-            -Context @{ Seq = $seq; HostName = $target.HostName } -OnComplete {
+        $script:Checks[$target.HostName] = @{ Status = 'checking'; Code = 0; User = ''; Root = $target.Root; Message = '' }
+        if ($winrm) {
+            $jobScript = 'param($HostName, $Credential, $WinRm) Test-FtWinRmAccess -HostName $HostName -Credential $Credential -WinRm $WinRm'
+            $parameters = @{ HostName = $target.HostName; Credential = (Get-FtWinRmCredential $target.HostName); WinRm = (Get-FtWinRmOptions $script:Config) }
+        } else {
+            $jobScript = 'param($ShareRoot) Test-FtShareAccess -ShareRoot $ShareRoot'
+            $parameters = @{ ShareRoot = $target.Root }
+        }
+        Start-FtJob -Script $jobScript -Parameters $parameters -Context @{ Seq = $seq; HostName = $target.HostName } -OnComplete {
                 param($value, $err, $context)
                 if ($context.Seq -ne $script:CheckSeq) { return }
                 $check = $script:Checks[$context.HostName]
@@ -375,11 +402,14 @@ function Invoke-FtHostCheck {
                 if ($err -or $null -eq $value) {
                     $check.Status = 'error'
                     $check.Code = 0
+                    $check.Message = if ($err) { $err.Message } else { '' }
                 } else {
                     $check.Status = $value.Status
                     $check.Code = $value.Code
+                    $check.Message = "$($value.Message)"
                 }
-                $check.User = Get-FtHostUser $context.HostName
+                # WinRM はサーバーが答えたユーザー（ドメイン\名前）を出す
+                $check.User = if ($value -and $value.User) { "$($value.User)" } else { Get-FtHostUser $context.HostName }
                 Update-FtView
                 # ［切断して再試行］のあと、全台の確認が終わったら送り直す
                 if ($script:RetryAfterCheck -and @($script:Checks.Values | Where-Object { $_.Status -eq 'checking' }).Count -eq 0) {
@@ -483,6 +513,18 @@ function Show-FtOpenDialog {
     }
 }
 
+# フォルダを選ぶ（複数可）。フォルダは中のファイルをサブフォルダごと、フォルダの構成のまま送る
+function Show-FtFolderDialog {
+    $handle = (New-Object System.Windows.Interop.WindowInteropHelper $window).Handle
+    $folders = @([FileTransfer.Native]::PickFolders($handle, '送るフォルダを選択（中のファイルをフォルダごと送ります）', "$($script:Config.history.lastOpenDir)"))
+    if ($folders.Count -eq 0) { return }
+    # 次に開くときは、選んだフォルダがあるフォルダから
+    $parent = [System.IO.Path]::GetDirectoryName($folders[0].TrimEnd('\'))
+    $script:Config.history.lastOpenDir = if ($parent) { $parent } else { $folders[0] }
+    Save-FtSettings
+    Add-FtPaths $folders
+}
+
 #endregion
 
 #region 表示 --------------------------------------------------------------------
@@ -505,7 +547,7 @@ function Test-FtCanStart {
 }
 
 function Set-FtHint {
-    param([string]$Kind, [string]$Text, [switch]$WithLogon, [string[]]$DisconnectHosts = @(), [int]$More = 0, [string]$ToolTip = '')
+    param([string]$Kind, [string]$Text, [switch]$WithLogon, [string[]]$DisconnectHosts = @(), [int]$More = 0, [string]$ToolTip = '', [string]$Note = '')
     $hint = $ui.HintText
     $hint.Inlines.Clear()
     $hint.ToolTip = $null
@@ -517,6 +559,7 @@ function Set-FtHint {
         $run.Foreground = Get-FtBrush 'PathBrush'
         $hint.Inlines.Add($run)
         if ($More -gt 0) { $hint.Inlines.Add((New-Object System.Windows.Documents.Run "  ほか $More 台")) }
+        if ($Note) { $hint.Inlines.Add((New-Object System.Windows.Documents.Run "  $Note")) }
         $hint.ToolTip = if ($ToolTip) { $ToolTip } else { $Text }
         return
     }
@@ -545,11 +588,17 @@ function Update-FtHint {
     param($Resolved, [object[]]$Targets)
     if (-not $Resolved.IsLocal -and $Resolved.Names.Count -eq 0) { Set-FtHint 'muted' 'ホスト名を入力するか、▾ から選んでください'; return }
     if ($Resolved.Error) { Set-FtHint 'error' $Resolved.Error; return }
+    $winrm = -not $Resolved.IsLocal -and (Get-FtMethod) -eq 'winrm'
     if (-not $Resolved.IsLocal) {
         $groups = Get-FtCheckGroups $Targets
         $statusLines = ($Targets | ForEach-Object { "$($_.HostName): $(Get-FtStatusText (Get-FtCheck $_.HostName))" }) -join "`n"
         if ($groups.checking.Count) { Set-FtHint 'muted' '接続を確認しています…'; return }
-        if ($groups.unreachable.Count) { Set-FtHint 'error' "$(Join-FtHostNames $groups.unreachable) に接続できません（ホスト名を確認してください）" -ToolTip $statusLines; return }
+        if ($groups.unreachable.Count) {
+            $port = Get-FtWinRmPort (Get-FtWinRmOptions $script:Config)
+            $why = if ($winrm) { "ホスト名と、サーバーで WinRM（$port 番ポート）が有効か確認してください" } else { 'ホスト名を確認してください' }
+            Set-FtHint 'error' "$(Join-FtHostNames $groups.unreachable) に接続できません（$why）" -ToolTip $statusLines
+            return
+        }
         if ($groups.noshare.Count) {
             $first = $groups.noshare[0]
             $text = if ($Targets.Count -eq 1) { "$((Get-FtCheck $first).Root) が見つかりません（管理共有が無効の可能性があります）" } else { "$(Join-FtHostNames $groups.noshare) の共有が見つかりません（管理共有が無効の可能性があります）" }
@@ -562,7 +611,19 @@ function Update-FtHint {
             Set-FtHint 'warn' $text -WithLogon -DisconnectHosts @($groups.conflict) -ToolTip $statusLines
             return
         }
-        if ($groups.error.Count) { Set-FtHint 'warn' "$(Join-FtHostNames $groups.error) の確認でエラーが発生しました" -ToolTip $statusLines; return }
+        if ($groups.error.Count) {
+            # WinRM は理由（TrustedHosts に登録されていない など）がわかるので、それを出す
+            $message = (Get-FtCheck $groups.error[0]).Message
+            $text = if ($message) { "$(Join-FtHostNames $groups.error)：$message" } else { "$(Join-FtHostNames $groups.error) の確認でエラーが発生しました" }
+            Set-FtHint 'warn' $text -ToolTip $statusLines
+            return
+        }
+    }
+    if ($winrm) {
+        # WinRM ではサーバー上のパスのまま送る（ツールチップは「ホスト名: パス」）
+        $paths = @($Resolved.Targets | ForEach-Object { "$($_.HostName): $($_.Path)" })
+        Set-FtHint 'path' $Resolved.Targets[0].Path -More ($paths.Count - 1) -Note '（WinRM）' -ToolTip ($paths -join "`n")
+        return
     }
     $paths = @($Resolved.Targets | ForEach-Object { $_.Path })
     Set-FtHint 'path' $paths[0] -More ($paths.Count - 1) -ToolTip ($paths -join "`n")
@@ -615,8 +676,17 @@ function Update-FtView {
     $ui.EmptyHint.Visibility = if ($count -eq 0) { 'Visible' } else { 'Collapsed' }
     $ui.FileList.Tag = if ($running) { 'locked' } else { $null }
     $ui.AddButton.IsEnabled = -not $running
+    $ui.AddFolderButton.IsEnabled = -not $running
+    $ui.SettingsButton.IsEnabled = -not $running
     $ui.DestBox.IsEnabled = -not $running
     $ui.FolderBox.IsEnabled = -not $running
+    # 既定（SMB）以外の方法で送るときは、送り先の見出しの右に出しておく
+    if ((Get-FtMethod) -eq 'winrm') {
+        $ui.MethodBadge.Visibility = 'Visible'
+        $ui.MethodBadge.ToolTip = 'サーバーへは WinRM（PowerShell リモート）で送ります。右の歯車の設定で変えられます'
+    } else {
+        $ui.MethodBadge.Visibility = 'Collapsed'
+    }
 
     $resolved = Resolve-FtCurrent
     $targets = Get-FtCheckTargets $resolved
@@ -789,8 +859,12 @@ function Start-FtTransfer {
     $now = if ($retry) { $script:Run.Now } else { Get-Date }
     $resolved = Resolve-FtCurrent $now
     if ($resolved.Error) { Update-FtView; return }
+    $method = if ($resolved.IsLocal) { 'local' } else { Get-FtMethod }
     $allTargets = @($resolved.Targets | ForEach-Object {
-        @{ Name = $(if ($_.IsLocal) { Get-FtLocalLabel } else { $_.HostName }); HostName = $_.HostName; IsLocal = $_.IsLocal; Dest = $_.Path }
+        @{
+            Name = $(if ($_.IsLocal) { Get-FtLocalLabel } else { $_.HostName }); HostName = $_.HostName; IsLocal = $_.IsLocal; Dest = $_.Path
+            Method = $method; Credential = $(if ($method -eq 'winrm') { Get-FtWinRmCredential $_.HostName } else { $null })
+        }
     })
     $targets = if ($retry) { @($allTargets | Where-Object { $script:Run.FailedNames -contains $_.Name }) } else { $allTargets }
     if ($targets.Count -eq 0) { $targets = $allTargets; $retry = $false }
@@ -808,6 +882,7 @@ function Start-FtTransfer {
         Threads             = [int]$transfer.threadsForFolders
         LargeThresholdBytes = [long]$transfer.unbufferedThresholdMB * 1MB
         ParallelHosts       = [int]$transfer.parallelHosts
+        WinRm               = Get-FtWinRmOptions $script:Config
     }
     $stageReused = $retry -and $stage -and (Test-Path -LiteralPath $stage.Folder)
 
@@ -819,6 +894,7 @@ function Start-FtTransfer {
         Key             = Get-FtDestKey
         Stage           = $stage
         IsLocal         = $resolved.IsLocal
+        Method          = $method
         Started         = Get-Date
         Samples         = New-Object System.Collections.Generic.List[object]
         ItemCount       = $script:Items.Count
@@ -840,8 +916,8 @@ function Start-FtTransfer {
     Update-FtView
 
     # 送り先の空き容量を確かめてから転送する（サーバーに問い合わせるので、画面が固まらないように裏で行う）
-    Start-FtJob -Script 'param($Items, $Targets, $StageFolder, $StageReused) Test-FtFreeSpace -Items $Items -Targets $Targets -StageFolder $StageFolder -StageReused:$StageReused' `
-        -Parameters @{ Items = $items; Targets = $targets; StageFolder = $(if ($stage) { $stage.Folder } else { '' }); StageReused = $stageReused } `
+    Start-FtJob -Script 'param($Items, $Targets, $StageFolder, $StageReused, $WinRm) Test-FtFreeSpace -Items $Items -Targets $Targets -StageFolder $StageFolder -StageReused:$StageReused -WinRm $WinRm' `
+        -Parameters @{ Items = $items; Targets = $targets; StageFolder = $(if ($stage) { $stage.Folder } else { '' }); StageReused = $stageReused; WinRm = $options.WinRm } `
         -Context $script:Run -OnComplete {
             param($value, $err, $context)
             if (-not [object]::ReferenceEquals($context, $script:Run)) { return }
@@ -890,7 +966,11 @@ function Resume-FtTransfer {
     $label = if ($pending.Retry) { '再送開始' } else { '転送開始' }
     Add-FtRunLog ("{0}: {1} 件（{2}）→ {3}" -f $label, $run.ItemCount, [FileTransfer.FileItem]::FormatSize($run.Bytes), (($pending.Targets | ForEach-Object { $_.Dest }) -join ', '))
     foreach ($item in $pending.Items) { Add-FtRunLog "  $($item.Path)" }
-    foreach ($target in $pending.Targets) { if (-not $target.IsLocal) { Add-FtRunLog "  $($target.Name) の接続ユーザー: $(Get-FtHostUser $target.HostName)" } }
+    foreach ($target in $pending.Targets) {
+        if ($target.IsLocal) { continue }
+        $via = if ($target.Method -eq 'winrm') { '（WinRM）' } else { '' }
+        Add-FtRunLog "  $($target.Name) の接続ユーザー: $(Get-FtHostUser $target.HostName)$via"
+    }
     if ($stage) {
         $note = if ($stage.Temporary) { '共有のファイルを一時フォルダに取得してから配ります' } else { 'この PC にもコピーを残します' }
         Add-FtRunLog "  $note`: $($stage.Folder)"
@@ -955,7 +1035,8 @@ function Get-FtUnitErrorInfo {
     param([hashtable]$Unit, [bool]$IsStage)
     $result = $Unit.Result
     $target = if ($IsStage) { 'この PC' } elseif ($Unit.IsLocal) { '送り先' } else { $Unit.Name }
-    return Get-FtErrorInfo -Code ([int]$result.Code) -Target $target -Missing @($result.Missing) -Fallback "$($result.Message)" -Server:(-not $IsStage -and -not $Unit.IsLocal)
+    $method = if ($IsStage -or -not $Unit.Method) { 'smb' } else { $Unit.Method }
+    return Get-FtErrorInfo -Code ([int]$result.Code) -Target $target -Missing @($result.Missing) -Fallback "$($result.Message)" -Server:(-not $IsStage -and -not $Unit.IsLocal) -Method $method
 }
 
 function Complete-FtTransfer {
@@ -976,7 +1057,9 @@ function Complete-FtTransfer {
                 '{0} 件を転送しました（{1}・{2}）' -f $run.ItemCount, [FileTransfer.FileItem]::FormatSize($run.Bytes), $elapsed
             }
             Add-FtRunLog "完了: $text"
-            $links = @('Open')
+            # WinRM で送ったサーバーは、エクスプローラーで開けない（ファイル共有が使えない）ので［開く］を出さない
+            $links = @()
+            if ($run.Method -ne 'winrm') { $links += 'Open' }
             if (-not $run.IsLocal) { $links += 'Rdp' }
             Set-FtResult 'ok' $text $links
             Clear-FtRunStage
@@ -1126,12 +1209,18 @@ function Submit-FtLogon {
     $d.OkButton.Content = if ($Disconnect) { '切断中…' } else { '接続中…' }
     foreach ($control in $d.OkButton, $d.UserBox, $d.PassBox, $d.SaveBox, $d.ApplyOthersBox) { $control.IsEnabled = $false }
     $jobScript = @'
-param($Targets, $UserName, $Password, $Save, $Disconnect)
+param($Targets, $UserName, $Password, $Save, $Disconnect, $Method, $WinRm)
+if ($Method -eq 'winrm') {
+    return @{ Disconnected = $null; Results = (Connect-FtWinRmGroup -Targets $Targets -UserName $UserName -Password $Password -Save:$Save -WinRm $WinRm) }
+}
 $disconnected = if ($Disconnect) { Disconnect-FtHostConnections -HostName $Targets[0].HostName } else { $null }
 @{ Disconnected = $disconnected; Results = (Connect-FtShareGroup -Targets $Targets -UserName $UserName -Password $Password -Save:$Save) }
 '@
     Start-FtJob -Script $jobScript `
-        -Parameters @{ Targets = $targets; UserName = $user; Password = $d.PassBox.SecurePassword.Copy(); Save = $state.Save; Disconnect = [bool]$Disconnect } `
+        -Parameters @{
+            Targets = $targets; UserName = $user; Password = $d.PassBox.SecurePassword.Copy(); Save = $state.Save; Disconnect = [bool]$Disconnect
+            Method = $state.Method; WinRm = (Get-FtWinRmOptions $script:Config)
+        } `
         -Context $state -OnComplete {
             param($value, $err, $context)
             $context.Busy = $false
@@ -1142,9 +1231,9 @@ $disconnected = if ($Disconnect) { Disconnect-FtHostConnections -HostName $Targe
                 if ($disconnected.Failed.Count -gt 0) { Write-FtLog ("切断できませんでした: " + ($disconnected.Failed -join '、')) }
             }
             if (-not $context.Dialog.IsVisible) {
-                # 接続中にキャンセルされた: 接続できていたら、終了時に切断する
+                # 接続中にキャンセルされた: 接続できていたら、終了時に切断する（WinRM は接続を残さない）
                 foreach ($result in $results) {
-                    if ($result -and $result.Code -eq 0 -and -not $script:Connections.Contains($result.Root)) { $script:Connections.Add($result.Root) }
+                    if ($result -and $result.Status -eq 'ok' -and $result.Root -and -not $script:Connections.Contains($result.Root)) { $script:Connections.Add($result.Root) }
                 }
                 return
             }
@@ -1153,10 +1242,13 @@ $disconnected = if ($Disconnect) { Disconnect-FtHostConnections -HostName $Targe
             foreach ($control in $dd.OkButton, $dd.UserBox, $dd.PassBox, $dd.SaveBox, $dd.ApplyOthersBox) { $control.IsEnabled = $true }
             if ($err -or $results.Count -eq 0) {
                 $dd.ErrorText.Text = if ($err) { $err.Message } else { '接続できませんでした。' }
-            } elseif ($results[0].Code -eq 0) {
+            } elseif ($results[0].Status -eq 'ok') {
                 $context.Result = $results
                 $context.Dialog.DialogResult = $true
                 return
+            } elseif ($context.Method -eq 'winrm' -and $results[0].Message) {
+                $codeText = if ($results[0].Code) { "（エラー $($results[0].Code)）" } else { '' }
+                $dd.ErrorText.Text = "$($results[0].Message)$codeText"
             } elseif ($results[0].Code -eq 1219) {
                 # 別のユーザーで接続中: 今ある接続を見せて［切断して再試行］を出す
                 $lines = @("$($context.HostName) には、この PC から別のユーザーで接続中です（エラー 1219）。")
@@ -1190,16 +1282,20 @@ function Show-FtLogon {
     $others = @($targets | Where-Object { $_.HostName -ne $HostName -and (Get-FtCheck $_.HostName).Status -in 'auth', 'conflict' } |
         ForEach-Object { @{ HostName = $_.HostName; ShareRoot = $_.Root } })
 
+    $method = Get-FtMethod
     $dialog = Read-FtXaml 'LogonDialog.xaml'
     $dialog.Owner = $window
     $d = Get-FtNamedElements $dialog @('Heading', 'UserBox', 'UserPlaceholder', 'PassBox', 'ErrorText', 'DisconnectButton', 'SaveBox', 'ApplyOthersBox', 'ApplyOthersText', 'OkButton', 'CancelButton')
     # ハンドラーからは $script:Logon で参照する（GetNewClosure を使うとスクリプトの関数が見えなくなるため）
-    $script:Logon = @{ Result = $null; Busy = $false; Dialog = $dialog; D = $d; HostName = $HostName; Root = $root; Others = $others; User = ''; Save = $false }
+    $script:Logon = @{ Result = $null; Busy = $false; Dialog = $dialog; D = $d; HostName = $HostName; Root = $root; Others = $others; User = ''; Save = $false; Method = $method }
     $state = $script:Logon
 
-    $d.Heading.Text = "$HostName にログオン"
+    $d.Heading.Text = if ($method -eq 'winrm') { "$HostName にログオン（WinRM）" } else { "$HostName にログオン" }
     $d.UserPlaceholder.Text = "$HostName\ユーザー名 または $env:USERDOMAIN\ユーザー名"
-    $initialUser = if ($script:SessionUsers.ContainsKey($HostName)) { $script:SessionUsers[$HostName] } else { Get-FtSavedUser $HostName }
+    # 前回のユーザー名: このセッションでログオンした人 > WinRM 用に保存したもの > SMB 用に保存したもの
+    $initialUser = if ($script:SessionUsers.ContainsKey($HostName)) { $script:SessionUsers[$HostName] }
+                   elseif ($method -eq 'winrm' -and (Get-FtWinRmSavedUser $HostName)) { Get-FtWinRmSavedUser $HostName }
+                   else { Get-FtSavedUser $HostName }
     $d.UserBox.Text = "$initialUser"
     $d.UserPlaceholder.Visibility = if ($d.UserBox.Text) { 'Collapsed' } else { 'Visible' }
     if ($others.Count -gt 0) {
@@ -1223,17 +1319,25 @@ function Show-FtLogon {
     if ($null -eq $results) { return $false }
     $failures = @()
     foreach ($result in $results) {
-        if ($result.Code -ne 0) {
-            $failures += "$($result.HostName)（$((Get-FtErrorInfo -Code ([int]$result.Code) -Target $result.HostName -Server).Short)）"
+        if ($result.Status -ne 'ok') {
+            $reason = if ($method -eq 'winrm' -and $result.Message) { $result.Message } else { (Get-FtErrorInfo -Code ([int]$result.Code) -Target $result.HostName -Server -Method $method).Short }
+            $failures += "$($result.HostName)（$reason）"
             continue
         }
         $hostName = $result.HostName
         $script:SessionUsers[$hostName] = $result.UserName
-        if ($result.ConnectName -and $result.ConnectName -ine $hostName) { $script:HostAlias[$hostName] = $result.ConnectName }
-        if (-not $script:Connections.Contains($result.Root)) { $script:Connections.Add($result.Root) }
-        $script:Checks[$hostName] = @{ Status = 'ok'; Code = 0; User = $result.UserName; Root = $result.Root }
+        if ($method -eq 'winrm') {
+            # WinRM は接続を残さないので、転送のたびにこの資格情報で接続する
+            $script:SessionCreds[$hostName] = $result.Credential
+            $script:Checks[$hostName] = @{ Status = 'ok'; Code = 0; User = $result.UserName; Root = "winrm:$hostName"; Message = '' }
+        } else {
+            if ($result.ConnectName -and $result.ConnectName -ine $hostName) { $script:HostAlias[$hostName] = $result.ConnectName }
+            if (-not $script:Connections.Contains($result.Root)) { $script:Connections.Add($result.Root) }
+            $script:Checks[$hostName] = @{ Status = 'ok'; Code = 0; User = $result.UserName; Root = $result.Root; Message = '' }
+        }
         $saved = if ($result.Saved) { '（資格情報を保存）' } else { '' }
-        Write-FtLog "$hostName に $($result.UserName) でログオンしました$saved"
+        $via = if ($method -eq 'winrm') { '（WinRM）' } else { '' }
+        Write-FtLog "$hostName に $($result.UserName) でログオンしました$via$saved"
         if ($state.Save -and -not $result.Saved) { $failures += "$hostName（資格情報を保存できませんでした: エラー $($result.SaveError)）" }
     }
     if ($failures.Count -gt 0) { Show-FtNotice ('ログオンできなかったサーバーがあります：' + ($failures -join '、')) 'warn' }
@@ -1267,6 +1371,34 @@ function Show-FtDetails {
     [void]$dialog.ShowDialog()
 }
 
+# 設定（サーバーへの転送方法）。変えたらユーザーの設定ファイルに保存して、接続を確認し直す
+function Show-FtSettings {
+    if ($script:Phase -eq 'running') { return }
+    $dialog = Read-FtXaml 'SettingsDialog.xaml'
+    $dialog.Owner = $window
+    $d = Get-FtNamedElements $dialog @('SmbRadio', 'WinRmRadio', 'WinRmText', 'OkButton')
+    $current = Get-FtMethod
+    $d.SmbRadio.IsChecked = $current -ne 'winrm'
+    $d.WinRmRadio.IsChecked = $current -eq 'winrm'
+    $port = Get-FtWinRmPort (Get-FtWinRmOptions $script:Config)
+    if ($port -ne 5985) { $d.WinRmText.Text = $d.WinRmText.Text -replace '5985 番ポート', "$port 番ポート" }
+    $d.OkButton.Add_Click({ param($sender, $e) [System.Windows.Window]::GetWindow($sender).DialogResult = $true })
+    if (-not $dialog.ShowDialog()) { return }
+    $selected = if ($d.WinRmRadio.IsChecked) { 'winrm' } else { 'smb' }
+    Set-FtMethod $selected
+}
+
+function Set-FtMethod {
+    param([ValidateSet('smb', 'winrm')][string]$Method)
+    if ($Method -eq (Get-FtMethod)) { return }
+    $script:Config.transfer.method = $Method
+    try { Set-FtUserSetting -Section 'transfer' -Name 'method' -Value $Method } catch { Write-FtLog "設定を保存できませんでした: $($_.Exception.Message)" }
+    Write-FtLog "サーバーへの転送方法を $(if ($Method -eq 'winrm') { 'WinRM' } else { 'SMB' }) にしました"
+    # 前の方法での完了・エラーの表示は消し（次の［転送開始］は新しい転送になる）、接続を確認し直す
+    Exit-FtFinished
+    Request-FtHostCheck -Immediate
+}
+
 #endregion
 
 #region イベント ------------------------------------------------------------------
@@ -1280,6 +1412,8 @@ $script:CheckTimer.Interval = [TimeSpan]::FromMilliseconds(700)
 $script:CheckTimer.Add_Tick({ $script:CheckTimer.Stop(); Invoke-FtHostCheck })
 
 $ui.AddButton.Add_Click({ Show-FtOpenDialog })
+$ui.AddFolderButton.Add_Click({ Show-FtFolderDialog })
+$ui.SettingsButton.Add_Click({ Show-FtSettings })
 $ui.ClearButton.Add_Click({ Remove-FtItems @($script:Items) })
 $ui.StartButton.Add_Click({ Start-FtTransfer })
 $ui.CancelButton.Add_Click({ Stop-FtTransfer })
@@ -1349,11 +1483,6 @@ $window.Add_PreviewKeyDown({
     }
 })
 
-$window.Add_SourceInitialized({
-    $handle = (New-Object System.Windows.Interop.WindowInteropHelper $window).Handle
-    [FileTransfer.Native]::RemoveMaximizeBox($handle)
-})
-
 $window.Add_Closing({
     param($sender, $e)
     if ($script:Phase -eq 'running') {
@@ -1362,7 +1491,7 @@ $window.Add_Closing({
         if ($script:Run.Dist) { Stop-FtDistribution $script:Run.Dist -TimeoutMs 5000 }
     }
     if ($window.WindowState -eq 'Normal') {
-        $script:Config.window = @{ left = [int]$window.Left; top = [int]$window.Top; height = [int]$window.Height }
+        $script:Config.window = @{ left = [int]$window.Left; top = [int]$window.Top; width = [int]$window.Width; height = [int]$window.Height }
     }
     $script:Config.last = @{ destination = (Get-FtDestText); folder = (Get-FtFolderText) }
     Save-FtSettings
@@ -1392,6 +1521,7 @@ function Initialize-FtWindow {
         $left = [double]$saved.left
         $top = [double]$saved.top
         $height = if ($saved.ContainsKey('height')) { [double]$saved.height } else { $window.Height }
+        $width = if ($saved.ContainsKey('width')) { [double]$saved.width } else { $window.Width }
         $screenRight = [System.Windows.SystemParameters]::VirtualScreenLeft + [System.Windows.SystemParameters]::VirtualScreenWidth
         $screenBottom = [System.Windows.SystemParameters]::VirtualScreenTop + [System.Windows.SystemParameters]::VirtualScreenHeight
         if ($left -ge [System.Windows.SystemParameters]::VirtualScreenLeft -and $left + 100 -le $screenRight -and
@@ -1400,6 +1530,7 @@ function Initialize-FtWindow {
             $window.Left = $left
             $window.Top = $top
             $window.Height = [Math]::Max($window.MinHeight, $height)
+            $window.Width = [Math]::Max($window.MinWidth, [Math]::Min($width, [System.Windows.SystemParameters]::VirtualScreenWidth))
         }
     }
 

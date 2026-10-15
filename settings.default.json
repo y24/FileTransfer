@@ -5,6 +5,7 @@
   },
   "serverShareMappings": [],
   "transfer": {
+    "method": "smb",
     "keepLocalCopy": false
   }
 }

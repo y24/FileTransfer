@@ -16,6 +16,8 @@ $script:Usage = @'
   -KeepLocalCopy           共有のファイルを、この PC にもコピーして残す
   -DisconnectExisting      別のユーザーで接続中（エラー 1219）のサーバーは、その接続を切断してからログオンし直す
   -SkipSpaceCheck          送り先の空き容量が足りなくても転送する
+  -Method SMB|WinRM        サーバーへの転送方法（省略すると設定画面で選んだ方法。既定は SMB）
+                           WinRM は SMB（ファイル共有）で接続できないサーバー向け。PowerShell リモートで送る
   -WhatIf                  送り先・空き容量・robocopy のコマンドを表示するだけで、転送しない
                            （接続できないサーバーや空き容量の不足があれば、それも表示して終了コード 2）
 
@@ -24,6 +26,7 @@ $script:Usage = @'
 例:
   FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\Work\{datetime} \\fs01\patches\2026-10\*.msu
   FileTransfer.bat -Destination このPC -Folder D:\Transfer\{date} \\fs01\release\app\setup.exe
+  FileTransfer.bat -Destination SV-APP01 -Folder C:\Work\{datetime} -Method WinRM D:\build\app
 '@
 
 function Write-FtCli {
@@ -105,6 +108,7 @@ function Invoke-FtCli {
         [switch]$PlanOnly,
         [switch]$SkipSpaceCheck,
         [switch]$DisconnectExisting,
+        [string]$Method,
         [hashtable]$Config,
         [string[]]$ModulePaths
     )
@@ -113,6 +117,10 @@ function Invoke-FtCli {
         Write-FtCli $script:Usage
         return 2
     }
+    # サーバーへの転送方法: -Method > 設定（画面の設定・settings.default.json）
+    $method = if ($Method) { $Method.ToLowerInvariant() } else { Get-FtTransferMethod $Config }
+    if ($method -notin 'smb', 'winrm') { Write-FtCliError "-Method には SMB か WinRM を指定してください: $Method"; return 2 }
+    $winrm = Get-FtWinRmOptions $Config
 
     # 送るファイル
     $sources = Resolve-FtCliSources $Source
@@ -125,17 +133,48 @@ function Invoke-FtCli {
     $now = Get-Date
     $alias = @{}
     $mappings = @($Config.serverShareMappings)
-    $resolved = Resolve-FtDestinations -Destination $Destination -Folder $Folder -Now $now -Mappings $mappings -HostAlias $alias
+    $resolved = Resolve-FtDestinations -Destination $Destination -Folder $Folder -Now $now -Mappings $mappings -HostAlias $alias -Method $method
     if ($resolved.Error) { Write-FtCliError $resolved.Error; return 2 }
+    if ($resolved.IsLocal) { $method = 'local' }
 
     $connections = New-Object System.Collections.Generic.List[string]
+    $credentials = @{}     # WinRM: ホスト名 → 接続に使う資格情報
     $pool = $null
     $distribution = $null
     $stage = $null
     try {
         # 接続確認（必要ならログオン）。-WhatIf のときはログオンも切断もせず、問題は警告として出して計画は表示する
         $problems = @()
-        if (-not $resolved.IsLocal) {
+        if ($method -eq 'winrm') {
+            # WinRM: -Credential のアカウント > 保存済みの資格情報 > Windows のログオンユーザー で接続できるか確かめる
+            foreach ($target in $resolved.Targets) {
+                $hostName = $target.HostName
+                $credential = if ($Credential) {
+                    $user = Convert-FtUserForHost -UserName $Credential.UserName -FromHost $resolved.Targets[0].HostName -ToHost $hostName
+                    New-Object System.Management.Automation.PSCredential -ArgumentList $user, $Credential.Password
+                } else {
+                    Get-FtWinRmSavedCredential $hostName
+                }
+                $access = Test-FtWinRmAccess -HostName $hostName -Credential $credential -WinRm $winrm
+                if ($access.Status -eq 'ok') {
+                    $credentials[$hostName] = $credential
+                    Write-FtCli "  ${hostName}: WinRM で接続できます（$($access.User)）"
+                    if ($Credential -and $SaveCredential -and -not $PlanOnly) {
+                        $saveCode = Save-FtWinRmCredential -HostName $hostName -Credential $credential
+                        if ($saveCode -ne 0) { Write-FtCliError "  ${hostName}: 資格情報を保存できませんでした（エラー $saveCode）" }
+                    }
+                    continue
+                }
+                $problems += switch ($access.Status) {
+                    'auth' {
+                        if ($Credential) { "${hostName}: $($access.Message)（$($credential.UserName)）" }
+                        else { "${hostName}: ログオンが必要です。画面でログオンして資格情報を保存するか、-Credential を指定してください。" }
+                    }
+                    default { "${hostName}: $($access.Message)" }
+                }
+            }
+            if ($problems.Count -gt 0 -and -not $PlanOnly) { $problems | ForEach-Object { Write-FtCliError $_ }; return 2 }
+        } elseif (-not $resolved.IsLocal) {
             foreach ($target in $resolved.Targets) {
                 $hostName = $target.HostName
                 $access = Test-FtShareAccess -ShareRoot $target.ShareRoot
@@ -182,7 +221,10 @@ function Invoke-FtCli {
         }
 
         $targets = @($resolved.Targets | ForEach-Object {
-            @{ Name = $(if ($_.IsLocal) { Get-FtLocalLabel } else { $_.HostName }); HostName = $_.HostName; IsLocal = $_.IsLocal; Dest = $_.Path }
+            @{
+                Name = $(if ($_.IsLocal) { Get-FtLocalLabel } else { $_.HostName }); HostName = $_.HostName; IsLocal = $_.IsLocal; Dest = $_.Path
+                Method = $method; Credential = $credentials[$_.HostName]
+            }
         })
         $transfer = $Config.transfer
         $stage = Get-FtStageFolder -Items $items -TargetCount $targets.Count -IsLocal $resolved.IsLocal `
@@ -193,14 +235,17 @@ function Invoke-FtCli {
             Threads             = [int]$transfer.threadsForFolders
             LargeThresholdBytes = [long]$transfer.unbufferedThresholdMB * 1MB
             ParallelHosts       = [int]$transfer.parallelHosts
+            WinRm               = $winrm
         }
 
-        Write-FtCli ("{0} 件（{1}）→ {2} か所" -f $items.Count, [FileTransfer.FileItem]::FormatSize($totalBytes), $targets.Count) 'Cyan'
+        $via = if ($method -eq 'winrm') { '（WinRM）' } else { '' }
+        Write-FtCli ("{0} 件（{1}）→ {2} か所{3}" -f $items.Count, [FileTransfer.FileItem]::FormatSize($totalBytes), $targets.Count, $via) 'Cyan'
         foreach ($target in $targets) { Write-FtCli "  $($target.Name): $($target.Dest)" }
         if ($stage) { Write-FtCli "  （共有のファイルは、先にこの PC に取得します: $($stage.Folder)）" }
 
-        # 空き容量
-        $space = Test-FtFreeSpace -Items $items -Targets $targets -StageFolder $(if ($stage) { $stage.Folder } else { '' })
+        # 空き容量（WinRM で接続できなかった台は確認しない）
+        $spaceTargets = @($targets | Where-Object { $_.Method -ne 'winrm' -or $credentials.ContainsKey($_.HostName) })
+        $space = Test-FtFreeSpace -Items $items -Targets $spaceTargets -StageFolder $(if ($stage) { $stage.Folder } else { '' }) -WinRm $winrm
         $shortages = @($space | Where-Object { $_.Short })
         foreach ($result in @($space | Where-Object { $_.Free -lt 0 })) { Write-FtLog "空き容量を確認できませんでした: $($result.Name) $($result.Path)" }
         if ($PlanOnly) {
@@ -222,10 +267,14 @@ function Invoke-FtCli {
         if ($PlanOnly) {
             $plan = New-FtDistribution -Items $items -Targets $targets -StageFolder $(if ($stage) { $stage.Folder } else { '' }) -Options $options
             Write-FtCli ''
-            Write-FtCli '実行する robocopy（-WhatIf のため実行しません）:' 'Cyan'
+            $heading = if ($method -eq 'winrm') { '実行する転送（-WhatIf のため実行しません）:' } else { '実行する robocopy（-WhatIf のため実行しません）:' }
+            Write-FtCli $heading 'Cyan'
             if ($plan.Stage) { foreach ($step in $plan.Stage.Steps) { Write-FtCli ("  [{0}] robocopy {1}" -f $plan.Stage.Name, (Get-FtRobocopyArguments -Step $step -RetryCount $options.RetryCount -RetryWaitSec $options.RetryWaitSec -Threads $options.Threads)) } }
             foreach ($unit in $plan.Hosts) {
-                foreach ($step in $unit.Steps) { Write-FtCli ("  [{0}] robocopy {1}" -f $unit.Name, (Get-FtRobocopyArguments -Step $step -RetryCount $options.RetryCount -RetryWaitSec $options.RetryWaitSec -Threads $options.Threads)) }
+                foreach ($step in $unit.Steps) {
+                    $line = if ($unit.Method -eq 'winrm') { Format-FtWinRmStep $step } else { 'robocopy ' + (Get-FtRobocopyArguments -Step $step -RetryCount $options.RetryCount -RetryWaitSec $options.RetryWaitSec -Threads $options.Threads) }
+                    Write-FtCli ("  [{0}] {1}" -f $unit.Name, $line)
+                }
             }
             if ($problems.Count -gt 0) {
                 Write-FtCli ''
@@ -256,7 +305,7 @@ function Invoke-FtCli {
                     $reported[$unit.Name] = $true
                     if ($unit.Status -eq 'success') { Write-FtCli ("{0}: 完了（{1}）" -f $unit.Name, (Format-FtCliSeconds $unit.Elapsed)) 'Green' }
                     else {
-                        $info = Get-FtErrorInfo -Code ([int]$unit.Result.Code) -Target $unit.Name -Missing @($unit.Result.Missing) -Fallback "$($unit.Result.Message)" -Server:(-not $unit.IsLocal)
+                        $info = Get-FtErrorInfo -Code ([int]$unit.Result.Code) -Target $unit.Name -Missing @($unit.Result.Missing) -Fallback "$($unit.Result.Message)" -Server:(-not $unit.IsLocal) -Method $unit.Method
                         Write-FtCliError ("{0}: 失敗 - {1}" -f $unit.Name, $info.Short)
                     }
                 }

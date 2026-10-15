@@ -385,6 +385,74 @@ Show-Offscreen $dialog
 Save-Screen $dialog '19-logon-conflict'
 $dialog.Close()
 
+Write-Host '20 wider window, folder button'
+Remove-FtItems @($script:Items)
+Add-FtPaths @("$src\other\設定_20261015.zip", "$src\modules")
+Wait-Until { $script:PendingSizes -eq 0 } -What 'folder size'
+Set-Destination $env:COMPUTERNAME 'C:\Work\{datetime}'
+$window.Width = 680
+Wait-Ui 200
+Assert-True ($window.ActualWidth -ge 670) "the window can be made wider ($($window.ActualWidth))"
+Assert-True ($ui.AddFolderButton.IsEnabled -and $ui.AddFolderButton.Visibility -eq 'Visible') 'folder button is shown'
+Assert-True ($ui.MethodBadge.Visibility -eq 'Collapsed') 'no method badge for SMB (the default)'
+Save-Screen $window '20-wide'
+$window.Width = 400
+
+Write-Host '21 settings dialog'
+$dialog = Read-FtXaml 'SettingsDialog.xaml'
+$d = Get-FtNamedElements $dialog @('SmbRadio', 'WinRmRadio')
+$d.WinRmRadio.IsChecked = $true
+Show-Offscreen $dialog
+Assert-True (-not $d.SmbRadio.IsChecked) 'the radio buttons are one group'
+Save-Screen $dialog '21-settings'
+$dialog.Close()
+
+# ---- WinRM（この PC に起動した別の PowerShell をサーバーの代わりにする）----
+$env:FILETRANSFER_TEST_WINRM_LOCAL = '1'
+
+Write-Host '22 WinRM ready'
+Set-FtMethod 'winrm'
+$userSettings = Get-Content -LiteralPath $env:FILETRANSFER_CONFIG -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True ($userSettings.transfer.method -eq 'winrm') 'the method is saved to the user settings'
+$winrmFolder = Join-Path $WorkDir 'winrm\{datetime}'   # サーバー上のパス（ここではこの PC のパス）
+Set-Destination $env:COMPUTERNAME $winrmFolder
+Assert-True ((Get-FtCheck $thisHost).Status -eq 'ok' -and (Get-FtCheck $thisHost).Root -eq "winrm:$thisHost") "WinRM host check is ok ($((Get-FtCheck $thisHost).Status) $((Get-FtCheck $thisHost).Message))"
+Assert-True ($ui.HintText.Text -like "→ $WorkDir\winrm\*（WinRM）") "hint shows the server path ($($ui.HintText.Text))"
+Assert-True ($ui.MethodBadge.Visibility -eq 'Visible') 'method badge is shown for WinRM'
+Assert-True $ui.StartButton.IsEnabled 'start is enabled for WinRM'
+Save-Screen $window '22-winrm-ready'
+
+Write-Host '23 WinRM transfer completes'
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'WinRM transfer' -TimeoutMs 120000
+Assert-True ($script:Phase -eq 'done') "WinRM transfer done ($($script:Phase); $($ui.ResultText.Text))"
+$dest = $script:Run.Dist.Hosts[0].Dest
+Assert-True ($script:Run.Dist.Hosts[0].Method -eq 'winrm' -and $dest -like "$WorkDir\winrm\*") "sent with WinRM to the server path ($dest)"
+Assert-True ((Test-Path -LiteralPath (Join-Path $dest '設定_20261015.zip')) -and (Test-Path -LiteralPath (Join-Path $dest 'modules\sub\b.dll'))) 'files and folders arrived over WinRM'
+Assert-True ($ui.OpenLink.Visibility -eq 'Collapsed' -and $ui.RdpLink.Visibility -eq 'Visible') 'no open link for WinRM (no file sharing), RDP is offered'
+Assert-True (@($script:RunLog | Where-Object { $_ -like '*（WinRM）*' }).Count -gt 0) 'the log says WinRM was used'
+Save-Screen $window '23-winrm-done'
+
+Write-Host '24 WinRM needs logon'
+$script:Checks[$thisHost].Status = 'auth'
+Update-FtView
+Assert-True ($ui.HintText.Text -like '*ログオンが必要です*ログオン…*') "WinRM logon hint ($($ui.HintText.Text))"
+$group = Connect-FtWinRmGroup -Targets @(@{ HostName = $thisHost }) -UserName "$thisHost\Administrator" -Password (ConvertTo-SecureString 'x' -AsPlainText -Force)
+Assert-True ($group[0].Status -eq 'ok' -and $group[0].Credential.UserName -eq "$thisHost\Administrator") 'WinRM logon returns the credential to keep for this session'
+$script:Checks[$thisHost].Status = 'error'
+$script:Checks[$thisHost].Message = 'この PC の WinRM の TrustedHosts に登録されていないため、接続できません'
+Update-FtView
+Assert-True ($ui.HintText.Text -like "$thisHost：*TrustedHosts*") "WinRM error reason is shown ($($ui.HintText.Text))"
+Save-Screen $window '24-winrm-error'
+Set-Destination $thisHost '\\{host}\C$\x'
+Assert-True ($ui.HintText.Text -like '*WinRM*サーバー上のパス*' -and -not $ui.StartButton.IsEnabled) "UNC folder is rejected for WinRM ($($ui.HintText.Text))"
+
+Write-Host '25 back to SMB'
+Set-FtMethod 'smb'
+Set-Destination $env:COMPUTERNAME 'C:\Work\{datetime}'
+Assert-True ($ui.MethodBadge.Visibility -eq 'Collapsed' -and (Get-FtCheck $thisHost).Root -like '\\*') 'SMB again after switching back'
+$env:FILETRANSFER_TEST_WINRM_LOCAL = $null
+
 $window.Close()
 $acl = Get-Acl -LiteralPath $denied
 [void]$acl.RemoveAccessRule($denyRule)

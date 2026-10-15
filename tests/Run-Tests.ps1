@@ -18,7 +18,7 @@ New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
 if (-not ('FileTransfer.Native' -as [type])) {
     Add-Type -Path (Join-Path $root 'lib\Native.cs'), (Join-Path $root 'lib\Models.cs')
 }
-$modulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'Distribution', 'Log', 'Cli') | ForEach-Object { Join-Path $root "lib\$_.psm1" }
+$modulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'WinRm', 'Distribution', 'Log', 'Cli') | ForEach-Object { Join-Path $root "lib\$_.psm1" }
 foreach ($modulePath in $modulePaths) { Import-Module $modulePath -Force -DisableNameChecking }
 # 自分自身の管理共有（\\127.0.0.1\C$）経由で読めるときは、UNC のコピー元として使う
 $uncWorkDir = if ($WorkDir -match '^[Cc]:\\' -and [FileTransfer.Native]::GetPathError('\\127.0.0.1\C$\') -eq 0) { '\\127.0.0.1\C$' + $WorkDir.Substring(2) } else { $null }
@@ -102,6 +102,20 @@ $r = Resolve-FtDestinations -Destination 'このPC' -Folder 'D:\Transfer\{date}'
 Assert-True ($r.IsLocal -and $r.Targets.Count -eq 1 -and $r.Targets[0].Path -eq 'D:\Transfer\20261015') 'single local destination'
 Assert-True ([bool](Resolve-FtDestinations -Destination '' -Folder 'C:\Work').Error) 'empty destination'
 
+Section 'Resolve (WinRM)'
+$r = Resolve-FtDestination -Destination 'sv-app01' -Folder 'C:\Work\{datetime}' -Now $now -Method winrm
+Assert-Equal 'C:\Work\20261015_1432|SV-APP01|winrm' ('{0}|{1}|{2}' -f $r.Path, $r.HostName, $r.Method) 'WinRM keeps the server path'
+Assert-True ($null -eq $r.ShareRoot) 'WinRM has no share root'
+$r = Resolve-FtDestination -Destination 'SV-LEGACY01' -Folder 'C:\Work\x' -Now $now -Mappings $mappings -Method winrm
+Assert-Equal 'C:\Work\x' $r.Path 'WinRM ignores share mappings'
+$r = Resolve-FtDestination -Destination 'SV-APP01' -Folder 'D:\' -Now $now -Method winrm
+Assert-Equal 'D:\' $r.Path 'WinRM drive root'
+Assert-True ((Resolve-FtDestination -Destination 'SV-APP01' -Folder '\\SV-APP01\Deploy$\x' -Method winrm).Error -like '*WinRM*') 'WinRM rejects a UNC folder'
+$r = Resolve-FtDestinations -Destination 'SV-APP01, SV-APP02' -Folder 'C:\Work\{datetime}' -Now $now -Method winrm
+Assert-True (-not $r.Error -and $r.Targets.Count -eq 2 -and $r.Targets[1].Path -eq 'C:\Work\20261015_1432') 'WinRM: the same server path on several servers is fine'
+$r = Resolve-FtDestinations -Destination 'このPC' -Folder 'D:\Transfer' -Now $now -Method winrm
+Assert-True ($r.IsLocal -and $r.Targets[0].Method -eq 'local') 'this PC is not affected by WinRM'
+
 Section 'Config'
 Assert-Equal 'b|a|c' ((Add-FtHistory @('a', 'B', 'c') 'b') -join '|') 'history moves an existing item to the top (case-insensitive)'
 Assert-Equal 3 (Add-FtHistory @('a', 'b', 'c', 'd') 'x' -Max 3).Count 'history max'
@@ -126,6 +140,20 @@ $config = Get-FtConfig -AppRoot $root
 Assert-True ($config.transfer.keepLocalCopy -and $config.transfer.retryCount -eq 2) 'user override merges with defaults'
 Save-FtConfig $config
 Assert-True ((Get-Content -LiteralPath $env:FILETRANSFER_CONFIG -Raw -Encoding UTF8 | ConvertFrom-Json).transfer.keepLocalCopy) 'user override is kept on save'
+Assert-Equal 'smb' (Get-FtTransferMethod $config) 'transfer method defaults to SMB'
+Set-FtUserSetting -Section 'transfer' -Name 'method' -Value 'winrm'
+$config = Get-FtConfig -AppRoot $root
+Assert-Equal 'winrm' (Get-FtTransferMethod $config) 'the settings screen value is read back'
+$userFile = Get-Content -LiteralPath $env:FILETRANSFER_CONFIG -Raw -Encoding UTF8 | ConvertFrom-Json
+Assert-True ($userFile.transfer.method -eq 'winrm' -and $userFile.transfer.keepLocalCopy -and $null -eq $userFile.transfer.retryCount) 'only the changed setting is written (others keep the distributed defaults)'
+Assert-True (@($userFile.history.destinations) -contains 'SV-APP01') 'history is kept when a setting is saved'
+Set-FtUserSetting -Section 'transfer' -Name 'method' -Value 'smb'
+Assert-Equal 'smb' (Get-FtTransferMethod @{ transfer = @{ method = 'bogus' } }) 'unknown method falls back to SMB'
+$winrmOptions = Get-FtWinRmOptions $config
+Assert-True (-not $winrmOptions.UseSsl -and $winrmOptions.Port -eq 0 -and $winrmOptions.ChunkBytes -eq 2MB) 'WinRM defaults'
+Assert-Equal 4MB (Get-FtWinRmOptions @{ winrm = @{ chunkSizeMB = 16 } }).ChunkBytes 'WinRM chunk size is capped (the server receives at most 10 MB per object)'
+Assert-Equal 5985 (Get-FtWinRmPort $winrmOptions) 'WinRM HTTP port'
+Assert-Equal 5986 (Get-FtWinRmPort @{ UseSsl = $true }) 'WinRM HTTPS port'
 
 Section 'FileItem'
 Assert-Equal '0 KB' ([FileTransfer.FileItem]::FormatSize(0)) 'size 0'
@@ -197,6 +225,10 @@ Assert-True ((Get-FtErrorInfo -Code 5).Detail -notlike '*管理共有*') 'local 
 Assert-True (-not (Get-FtErrorInfo -Code 112).NeedsLogon) 'disk full does not offer logon'
 Assert-True ((Get-FtErrorInfo -Code 0 -Missing @('a.txt')).Detail -like '*a.txt*') 'missing files listed'
 Assert-True ((Get-FtErrorInfo -Code 9999).Short -like '*9999*') 'unknown code'
+Assert-True ((Get-FtErrorInfo -Code 5 -Server -Method winrm).Detail -notlike '*管理共有*' -and (Get-FtErrorInfo -Code 5 -Server -Method winrm).NeedsLogon) 'WinRM access denied does not mention admin shares'
+Assert-True ((Get-FtErrorInfo -Code 53 -Server -Method winrm).Detail -like '*WinRM*') 'WinRM unreachable mentions WinRM'
+$info = Get-FtErrorInfo -Code 0 -Target 'SV-APP01' -Server -Method winrm -Fallback "TrustedHosts に登録されていません`n詳しい説明"
+Assert-Equal 'SV-APP01：TrustedHosts に登録されていません' $info.Short 'WinRM message: the first line is the summary'
 
 Section 'Connection'
 Assert-Equal 'auth' (Get-FtAccessStatus 1326) 'logon failure'
@@ -407,6 +439,141 @@ Set-Acl -LiteralPath $deniedRoot -AclObject $acl
 $distribution = New-FtDistribution -Items @($distItems[1]) -Targets $distTargets -Options @{ ParallelHosts = 1 } -Pool $pool
 Stop-FtDistribution $distribution
 Assert-Equal 'canceled' (Get-FtDistributionSummary $distribution).Status 'cancel before any destination starts'
+
+Section 'WinRM errors and credentials'
+$transportError = New-Object System.Management.Automation.Remoting.PSRemotingTransportException 'Access is denied.'
+$transportError.ErrorCode = 5
+Assert-Equal 'auth|5' ('{0}|{1}' -f (ConvertFrom-FtWinRmError $transportError).Status, (ConvertFrom-FtWinRmError $transportError).Code) 'access denied needs logon'
+$transportError.ErrorCode = 1326
+Assert-Equal 'auth|1326' ('{0}|{1}' -f (ConvertFrom-FtWinRmError $transportError).Status, (ConvertFrom-FtWinRmError $transportError).Code) 'bad password needs logon'
+$transportError.ErrorCode = -2144108316   # 0x803380E4: TrustedHosts
+$converted = ConvertFrom-FtWinRmError $transportError
+Assert-True ($converted.Status -eq 'error' -and $converted.Message -like '*TrustedHosts*' -and $converted.Detail -like '*Set-Item WSMan*') 'TrustedHosts is explained'
+$transportError.ErrorCode = -2144108526   # 0x80338012: cannot connect
+Assert-Equal 'unreachable|53' ('{0}|{1}' -f (ConvertFrom-FtWinRmError $transportError).Status, (ConvertFrom-FtWinRmError $transportError).Code) 'WinRM service not reachable'
+$converted = ConvertFrom-FtWinRmError (New-Object System.Exception "first line`nsecond line")
+Assert-True ($converted.Status -eq 'error' -and $converted.Message -like '*first line' -and $converted.Detail -like '*second line*') 'unknown error keeps the original message'
+$watch = [Diagnostics.Stopwatch]::StartNew()
+$access = Test-FtWinRmAccess -HostName 'ft-nonexistent-host.invalid' -TimeoutMs 1500
+Assert-True ($access.Status -eq 'unreachable' -and $watch.ElapsedMilliseconds -lt 5000) "unknown host is unreachable over WinRM ($($access.Status), $($watch.ElapsedMilliseconds) ms)"
+Assert-True ($null -eq (Get-FtWinRmSavedCredential 'FT-TEST-NO-SUCH-CREDENTIAL')) 'no saved WinRM credential'
+# 汎用資格情報の保存と読み出し（テスト用の名前で書いて、すぐ消す）
+$testHost = 'FT-TEST-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+try {
+    $testPassword = ConvertTo-SecureString 'p@ss wörd' -AsPlainText -Force
+    $code = Save-FtWinRmCredential -HostName $testHost -Credential (New-Object System.Management.Automation.PSCredential "$testHost\Administrator", $testPassword)
+    $readBack = Get-FtWinRmSavedCredential $testHost.ToLowerInvariant()
+    Assert-True ($code -eq 0 -and $readBack.UserName -eq "$testHost\Administrator" -and $readBack.GetNetworkCredential().Password -eq 'p@ss wörd') 'WinRM credential round trip'
+    Assert-Equal "$testHost\Administrator" (Get-FtWinRmSavedUser $testHost) 'saved WinRM user'
+} finally {
+    [void][FileTransfer.Native]::DeleteGenericCredential((Get-FtWinRmCredentialTarget $testHost))
+}
+Assert-True ($null -eq (Get-FtWinRmSavedCredential $testHost)) 'test credential removed'
+
+# ここからは、この PC に起動した別の PowerShell をサーバーの代わりにする（リモートと同じく値はシリアル化される）
+$env:FILETRANSFER_TEST_WINRM_LOCAL = '1'
+
+Section 'WinRM transfer (this PC stands in for the server)'
+New-Item -ItemType Directory -Path "$src\folder\empty" -Force | Out-Null
+[IO.File]::WriteAllBytes("$src\folder\zero.bin", [byte[]]@())
+$random = New-Object byte[] (3MB + 77)
+(New-Object Random 7).NextBytes($random)
+$chunked = Join-Path $src 'chunked.bin'
+[IO.File]::WriteAllBytes($chunked, $random)
+$winrmItems = @(
+    @{ Path = $chunked; IsFolder = $false; Size = $random.Length },
+    @{ Path = "$src\日本語ファイル.txt"; IsFolder = $false; Size = 5 },
+    @{ Path = "$src\folder"; IsFolder = $true; Size = 3 }
+)
+$winrmDest = Join-Path $WorkDir 'winrm\20261015_1432'
+$sync = New-TestSync
+$result = Invoke-FtWinRmTransferPlan -Steps (New-FtTransferPlan -Items $winrmItems -Destination $winrmDest) -Sync $sync -HostName 'TEST' -WinRm @{ ChunkBytes = 1MB }
+Assert-Equal 'success' $result.Status "WinRM transfer succeeds ($($result.Message))"
+Assert-Equal (Get-FileHash -LiteralPath $chunked).Hash (Get-FileHash -LiteralPath "$winrmDest\chunked.bin").Hash 'a file larger than the chunk size arrives intact'
+Assert-True (Test-Path -LiteralPath "$winrmDest\日本語ファイル.txt") 'Japanese file name over WinRM'
+Assert-True ((Test-Path -LiteralPath "$winrmDest\folder\sub\b.txt") -and (Test-Path -LiteralPath "$winrmDest\folder\empty") -and (Test-Path -LiteralPath "$winrmDest\folder\zero.bin")) 'folder structure (with empty folders and empty files) over WinRM'
+Assert-True ((Get-Item -LiteralPath "$winrmDest\chunked.bin").LastWriteTimeUtc -eq (Get-Item -LiteralPath $chunked).LastWriteTimeUtc) 'modified time is kept'
+Assert-Equal 0 @(Get-ChildItem -LiteralPath $winrmDest -Recurse -Filter '*.ftpart').Count 'no partial files left'
+Assert-Equal $sync.BytesTotal $sync.BytesDone 'WinRM progress reaches 100%'
+$completed = @($sync.Completed.ToArray())
+Assert-True ($completed -contains $chunked -and $completed -contains "$src\folder") 'WinRM reports completed items'
+Assert-True (@($sync.Log.ToArray() | Where-Object { $_ -like '*送信*chunked.bin*' }).Count -gt 0) 'WinRM log lists sent files'
+
+$sync = New-TestSync
+$result = Invoke-FtWinRmTransferPlan -Steps (New-FtTransferPlan -Items $winrmItems -Destination $winrmDest) -Sync $sync -HostName 'TEST' -WinRm @{ ChunkBytes = 1MB }
+Assert-True ($result.Status -eq 'success' -and @($sync.Log.ToArray() | Where-Object { $_ -like '*送信 *' }).Count -eq 0) 'second WinRM run skips files that are already there'
+Assert-True (@($sync.Log.ToArray() | Where-Object { $_ -like '*同じ内容のファイルがあるため省略: 3 ファイル' }).Count -eq 1) 'skipped files are summarized in the log'
+[IO.File]::WriteAllText("$src\folder\a.txt", 'changed')
+$sync = New-TestSync
+$result = Invoke-FtWinRmTransferPlan -Steps (New-FtTransferPlan -Items @($winrmItems[2]) -Destination $winrmDest) -Sync $sync -HostName 'TEST'
+Assert-True ($result.Status -eq 'success' -and [IO.File]::ReadAllText("$winrmDest\folder\a.txt") -eq 'changed' -and @($sync.Log.ToArray() | Where-Object { $_ -like '*送信 *' }).Count -eq 1) 'a changed file is sent again (and only that one)'
+[IO.File]::WriteAllText("$src\folder\a.txt", 'a')
+
+$sync = New-TestSync
+$result = Invoke-FtWinRmTransferPlan -Steps (New-FtTransferPlan -Items $missingItems -Destination $winrmDest) -Sync $sync -HostName 'TEST'
+Assert-Equal 'failed|deleted.txt' ('{0}|{1}' -f $result.Status, ($result.Missing -join ',')) 'WinRM: missing source file is reported'
+$sync = New-TestSync
+$result = Invoke-FtWinRmTransferPlan -Steps (New-FtTransferPlan -Items @(@{ Path = "$WorkDir\no-such-dir"; IsFolder = $true; Size = 1 }) -Destination $winrmDest) -Sync $sync -HostName 'TEST'
+Assert-Equal 'failed|3' ('{0}|{1}' -f $result.Status, $result.Code) 'WinRM: missing source folder gives error 3'
+
+# 書き込みを拒否したフォルダに送る
+$winrmDenied = Join-Path $WorkDir 'winrm-denied'
+New-Item -ItemType Directory -Path $winrmDenied -Force | Out-Null
+$acl = Get-Acl -LiteralPath $winrmDenied
+$acl.AddAccessRule($denyRule)
+Set-Acl -LiteralPath $winrmDenied -AclObject $acl
+$sync = New-TestSync
+$result = Invoke-FtWinRmTransferPlan -Steps (New-FtTransferPlan -Items @($winrmItems[1]) -Destination "$winrmDenied\x") -Sync $sync -HostName 'TEST'
+Assert-Equal 'failed|5' ('{0}|{1}' -f $result.Status, $result.Code) 'WinRM: access denied on the server gives error 5'
+$acl = Get-Acl -LiteralPath $winrmDenied
+[void]$acl.RemoveAccessRule($denyRule)
+Set-Acl -LiteralPath $winrmDenied -AclObject $acl
+
+$space = Test-FtFreeSpace -Items $winrmItems -Targets @(@{ Name = 'TEST'; HostName = 'TEST'; Method = 'winrm'; Dest = $winrmDest })
+Assert-True ($space.Count -eq 1 -and $space[0].Free -gt 0 -and $space[0].Required -eq 3) "WinRM free space counts only what is not there yet ($($space[0].Required) bytes)"
+Assert-Equal ([IO.Path]::GetPathRoot($WorkDir).TrimEnd('\')) $space[0].Volume 'WinRM free space volume is the server drive'
+$access = Test-FtWinRmAccess -HostName 'TEST'
+Assert-True ($access.Status -eq 'ok' -and $access.User -eq [Security.Principal.WindowsIdentity]::GetCurrent().Name) "WinRM access check reports the remote user ($($access.User))"
+
+Section 'WinRM cancel while copying'
+$sync = New-TestSync
+$runspace = [runspacefactory]::CreateRunspace()
+$runspace.Open()
+$ps = [powershell]::Create()
+$ps.Runspace = $runspace
+[void]$ps.AddScript({
+    param($Root, $ModulePaths, $Steps, $Sync)
+    $env:FILETRANSFER_TEST_WINRM_LOCAL = '1'
+    Add-Type -Path (Join-Path $Root 'lib\Native.cs'), (Join-Path $Root 'lib\Models.cs') -ErrorAction SilentlyContinue
+    foreach ($modulePath in $ModulePaths) { Import-Module $modulePath -DisableNameChecking }
+    Invoke-FtWinRmTransferPlan -Steps $Steps -Sync $Sync -HostName 'TEST' -WinRm @{ ChunkBytes = 1MB }
+}).AddArgument($root).AddArgument([string[]]$modulePaths).AddArgument((New-FtTransferPlan -Items @(@{ Path = $huge; IsFolder = $false; Size = 2GB }) -Destination "$WorkDir\winrm-cancel")).AddArgument($sync)
+$handle = $ps.BeginInvoke()
+$watch = [Diagnostics.Stopwatch]::StartNew()
+while ([long]$sync.BytesDone -lt 3MB -and -not $handle.IsCompleted -and $watch.ElapsedMilliseconds -lt 30000) { Start-Sleep -Milliseconds 50 }
+$progressSeen = [long]$sync.BytesDone
+$sync.Cancel = $true
+[void]$handle.AsyncWaitHandle.WaitOne(30000)
+$ps.Dispose(); $runspace.Dispose()
+Assert-Equal 'canceled' $sync.Result.Status 'WinRM cancel while copying'
+Assert-True ($progressSeen -gt 0 -and [double]$sync.CurrentFraction -ge 0) "WinRM progress was reported before cancel ($progressSeen bytes)"
+Assert-True (-not (Test-Path -LiteralPath "$WorkDir\winrm-cancel\huge.bin") -and @(Get-ChildItem -LiteralPath "$WorkDir\winrm-cancel" -Filter '*.ftpart' -ErrorAction SilentlyContinue).Count -eq 0) 'canceling removes the partial file on the server'
+
+Section 'WinRM distribution (two servers)'
+$winrmTargets = @(
+    @{ Name = 'A'; HostName = 'A'; IsLocal = $false; Method = 'winrm'; Dest = "$WorkDir\winrm-dist\A" },
+    @{ Name = 'B'; HostName = 'B'; IsLocal = $false; Method = 'winrm'; Dest = "$WorkDir\winrm-dist\B" }
+)
+$stageFolder = Join-Path (Get-FtStageRoot) ('stage_test_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$distribution = New-FtDistribution -Items $distItems -Targets $winrmTargets -StageFolder $stageFolder -Options @{ ParallelHosts = 2; WinRm = @{ ChunkBytes = 1MB } } -Pool $pool
+Assert-True (@($distribution.Hosts | Where-Object { $_.Method -eq 'winrm' }).Count -eq 2) 'hosts use WinRM'
+Wait-Distribution $distribution -TimeoutMs 120000
+$summary = Get-FtDistributionSummary $distribution
+Assert-Equal 'success' $summary.Status "WinRM distribution to two servers ($(@($summary.Failed | ForEach-Object { $_.Result.Message }) -join '; '))"
+Assert-True ((Test-Path -LiteralPath "$WorkDir\winrm-dist\A\日本語ファイル.txt") -and (Test-Path -LiteralPath "$WorkDir\winrm-dist\B\folder\sub\b.txt")) 'both WinRM servers received the files'
+$progress = Get-FtDistributionProgress $distribution
+Assert-Equal $progress.BytesTotal $progress.BytesDone 'WinRM distribution progress reaches 100%'
+Remove-FtStageFolder $stageFolder
 $pool.Close()
 
 Section 'Command line'
@@ -481,6 +648,14 @@ if ($uncWorkDir) {
         Write-Host '    (info) copy finished before stop; stop path not exercised' -ForegroundColor Yellow
     }
 }
+# WinRM（FILETRANSFER_TEST_WINRM_LOCAL により、この PC の別の PowerShell がサーバーの代わりになる）
+$cli = Invoke-Cli @('-Destination', $env:COMPUTERNAME, '-Folder', "$WorkDir\cliw\{host}", '-Method', 'WinRM', "$src\日本語ファイル.txt", "$src\folder")
+Assert-True ($cli.Code -eq 0 -and (Test-Path -LiteralPath "$WorkDir\cliw\$($env:COMPUTERNAME.ToUpperInvariant())\日本語ファイル.txt") -and (Test-Path -LiteralPath "$WorkDir\cliw\$($env:COMPUTERNAME.ToUpperInvariant())\folder\sub\b.txt")) "-Method WinRM copies files and folders (exit $($cli.Code))`n$($cli.Output)"
+$cli = Invoke-Cli @('-Destination', $env:COMPUTERNAME, '-Folder', "$WorkDir\cliw2", '-Method', 'winrm', "$src\日本語ファイル.txt", '-WhatIf')
+Assert-True ($cli.Code -eq 0 -and $cli.Output -like '*WinRM "*' -and $cli.Output -like '*空き容量:*' -and -not (Test-Path -LiteralPath "$WorkDir\cliw2")) "-Method WinRM -WhatIf shows the plan (exit $($cli.Code))"
+$cli = Invoke-Cli @('-Destination', 'SV-APP01', '-Folder', '\\SV-APP01\Deploy$\x', '-Method', 'WinRM', "$src\日本語ファイル.txt")
+Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*WinRM*サーバー上のパス*') "-Method WinRM rejects a UNC folder (exit $($cli.Code))"
+
 $bat = Join-Path $root 'FileTransfer.bat'
 $output = & cmd.exe /c "`"$bat`" -Destination このPC -Folder `"$WorkDir\cli5`" `"$src\日本語ファイル.txt`"" 2>&1 | Out-String
 Assert-True ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath "$WorkDir\cli5\日本語ファイル.txt")) "FileTransfer.bat passes arguments to the command line mode (exit $LASTEXITCODE)"

@@ -345,19 +345,29 @@ function Invoke-FtTransferPlan {
 
 # エラーコード → 画面に出す文言
 #   Short: 結果の行に出す要約 / Detail: ［詳細］に出す説明 / NeedsLogon: ［ログオン…］を出すか
+#   Method: winrm のときは、ファイル共有（445 番ポート・管理共有）ではなく WinRM の説明にする
 function Get-FtErrorInfo {
-    param([int]$Code, [string]$Target = '送り先', [string[]]$Missing = @(), [string]$Fallback = '', [switch]$Server)
+    param([int]$Code, [string]$Target = '送り先', [string[]]$Missing = @(), [string]$Fallback = '', [switch]$Server, [string]$Method = 'smb')
+    $winrm = $Server -and $Method -eq 'winrm'
     $info = switch ($Code) {
         { $_ -in 2, 3 } { @{ Short = 'コピー元が見つかりません'; Detail = "コピー元のファイルまたはフォルダが見つかりません（エラー $Code）。移動や削除をされていないか確認してください。" } }
         5 {
-            if ($Server) {
+            if ($winrm) {
+                @{ Short = "${Target}：アクセスが拒否されました"; NeedsLogon = $true; Detail = "アクセスが拒否されました（エラー 5）。`nWinRM で接続できる権限（サーバーの Administrators など）と、送り先のフォルダに書き込む権限があるアカウントか確認してください。`n［ログオン…］から別のアカウントで接続し直せます。`n$Fallback".Trim() }
+            } elseif ($Server) {
                 @{ Short = "${Target}：アクセスが拒否されました"; NeedsLogon = $true; Detail = "書き込みが拒否されました（エラー 5）。`n管理者権限のあるアカウントで接続しているか確認してください。ローカルアカウントの場合、組み込みの Administrator 以外は管理共有（C$ など）に接続できないことがあります。`n［ログオン…］から別のアカウントで接続し直せます。" }
             } else {
                 @{ Short = "${Target}：アクセスが拒否されました"; Detail = "書き込みが拒否されました（エラー 5）。送り先のフォルダに書き込む権限があるか確認してください。" }
             }
         }
         { $_ -in 32, 33 } { @{ Short = 'ファイルが使用中です'; Detail = "ほかのプログラムがファイルを使用しているため、コピーできません（エラー $Code）。" } }
-        { $_ -in 51, 53, 64, 121, 1231, 1232 } { @{ Short = "${Target} に接続できません"; Detail = "ネットワーク パスが見つからないか、接続が切れました（エラー $Code）。`nホスト名と、サーバーでファイル共有（445 番ポート）が許可されているか確認してください。" } }
+        { $_ -in 51, 53, 64, 121, 1231, 1232 } {
+            if ($winrm) {
+                @{ Short = "${Target} に接続できません"; Detail = "WinRM で接続できないか、接続が切れました。`nホスト名と、サーバーで WinRM（PowerShell リモート。5985 番ポート）が有効か確認してください。`n$Fallback".Trim() }
+            } else {
+                @{ Short = "${Target} に接続できません"; Detail = "ネットワーク パスが見つからないか、接続が切れました（エラー $Code）。`nホスト名と、サーバーでファイル共有（445 番ポート）が許可されているか確認してください。" }
+            }
+        }
         67 { @{ Short = '共有が見つかりません'; Detail = "共有フォルダが見つかりません（エラー 67）。サーバーの管理共有（C$ など）が無効になっている可能性があります。" } }
         112 { @{ Short = 'ディスクの空き容量が足りません'; Detail = "送り先のディスクの空き容量が足りません（エラー 112）。" } }
         1219 { @{ Short = "${Target}：別のユーザーで接続中です"; NeedsLogon = $true; NeedsDisconnect = $true; Detail = "このサーバーには、別のユーザーで接続中です（エラー 1219）。`n［切断して再試行］で、この PC からそのサーバーへの接続（ネットワーク ドライブなど）を切断して接続し直せます。それでも直らないときは、エクスプローラーでそのサーバーを開いているウィンドウを閉じ、数分待ってから再試行してください。" } }
@@ -371,6 +381,11 @@ function Get-FtErrorInfo {
     if ($null -eq $info) {
         if ($Missing.Count -gt 0) {
             $info = @{ Short = '一部のファイルが送り先に届いていません'; Detail = "次のファイルが送り先に見つかりません。コピー元から移動・削除されていないか確認してください。`n" + ($Missing -join "`n") }
+        } elseif ($winrm -and $Fallback) {
+            # WinRM のエラーは、1 行目が要約になっている（WinRm.psm1 の ConvertFrom-FtWinRmError）
+            $first = @($Fallback -split "`r?`n" | Where-Object { $_.Trim() })[0]
+            $codeText = if ($Code) { "（エラー $Code）" } else { '' }
+            $info = @{ Short = "${Target}：$first$codeText"; Detail = $Fallback }
         } elseif ($Code) {
             $info = @{ Short = "転送に失敗しました（エラー $Code）"; Detail = "転送に失敗しました（エラー $Code）。`n$Fallback".Trim() }
         } else {
@@ -382,4 +397,4 @@ function Get-FtErrorInfo {
     return $info
 }
 
-Export-ModuleMember -Function Measure-FtFolder, Get-FtParentPath, New-FtTransferPlan, ConvertTo-FtRobocopyPath, Get-FtRobocopyArguments, ConvertFrom-FtRobocopyLine, Invoke-FtRobocopyStep, Invoke-FtTransferPlan, Get-FtErrorInfo
+Export-ModuleMember -Function Measure-FtFolder, Get-FtParentPath, New-FtTransferPlan, ConvertTo-FtRobocopyPath, Get-FtRobocopyArguments, ConvertFrom-FtRobocopyLine, Write-FtSyncLog, Invoke-FtRobocopyStep, Invoke-FtTransferPlan, Get-FtErrorInfo

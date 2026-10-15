@@ -57,7 +57,8 @@ function Get-FtUncHost {
 }
 
 # 送り先とフォルダ欄の値から、実際にコピーする先のパスを求める
-# 戻り値: @{ Path; Error; IsLocal; HostName; ShareRoot }
+# Method が winrm のときは、サーバーへは PowerShell リモートで送るので、サーバー上のパス（C:\Work\...）のまま返す
+# 戻り値: @{ Path; Error; IsLocal; HostName; ShareRoot; Method }（Method は このPC なら local、それ以外は smb | winrm）
 function Resolve-FtDestination {
     param(
         [string]$Destination,
@@ -65,11 +66,13 @@ function Resolve-FtDestination {
         [datetime]$Now = (Get-Date),
         [object[]]$Mappings = @(),
         [hashtable]$HostAlias = @{},
-        [string]$UserName = $env:USERNAME
+        [string]$UserName = $env:USERNAME,
+        [ValidateSet('smb', 'winrm')][string]$Method = 'smb'
     )
     $isLocal = Test-FtLocalDestination $Destination
     $hostName = if ($isLocal) { '' } else { "$Destination".Trim().ToUpperInvariant() }
-    $result = @{ Path = $null; Error = $null; IsLocal = $isLocal; HostName = $hostName; ShareRoot = $null }
+    $result = @{ Path = $null; Error = $null; IsLocal = $isLocal; HostName = $hostName; ShareRoot = $null; Method = $(if ($isLocal) { 'local' } else { $Method }) }
+    $winrm = -not $isLocal -and $Method -eq 'winrm'
 
     if (-not $isLocal) {
         if (-not $hostName) { $result.Error = 'ホスト名を入力するか、▾ から選んでください'; return $result }
@@ -90,6 +93,7 @@ function Resolve-FtDestination {
     }
 
     if ($expanded -match '^\\\\[^\\]+\\[^\\]+') {
+        if ($winrm) { $result.Error = 'WinRM で送るときは、フォルダをサーバー上のパス（C:\Work など）で入力してください'; return $result }
         $result.Path = $expanded.TrimEnd('\')
         $result.ShareRoot = Get-FtShareRoot $result.Path
         if (-not $isLocal) { $result.HostName = (Get-FtUncHost $result.Path).ToUpperInvariant() }
@@ -103,7 +107,7 @@ function Resolve-FtDestination {
     $drive = $Matches['drive'].ToUpperInvariant()
     $rest = "$($Matches['rest'])".TrimEnd('\')
 
-    if ($isLocal) {
+    if ($isLocal -or $winrm) {
         $result.Path = if ($rest) { "${drive}:$rest" } else { "${drive}:\" }
         return $result
     }
@@ -151,14 +155,15 @@ function Resolve-FtDestinations {
         [datetime]$Now = (Get-Date),
         [object[]]$Mappings = @(),
         [hashtable]$HostAlias = @{},
-        [string]$UserName = $env:USERNAME
+        [string]$UserName = $env:USERNAME,
+        [ValidateSet('smb', 'winrm')][string]$Method = 'smb'
     )
     $names = Split-FtDestinations $Destination
     $locals = @($names | Where-Object { Test-FtLocalDestination $_ })
     $result = @{ Targets = @(); Names = $names; Error = $null; IsLocal = ($locals.Count -gt 0); IsMulti = ($names.Count -gt 1) }
     if ($names.Count -eq 0) {
         # ホスト名が空のときも、フォルダ欄のチェック結果は返す
-        $empty = Resolve-FtDestination -Destination '' -Folder $Folder -Now $Now -Mappings $Mappings -HostAlias $HostAlias -UserName $UserName
+        $empty = Resolve-FtDestination -Destination '' -Folder $Folder -Now $Now -Mappings $Mappings -HostAlias $HostAlias -UserName $UserName -Method $Method
         $result.Error = $empty.Error
         return $result
     }
@@ -168,7 +173,7 @@ function Resolve-FtDestinations {
     }
     $targets = @()
     foreach ($name in $names) {
-        $target = Resolve-FtDestination -Destination $name -Folder $Folder -Now $Now -Mappings $Mappings -HostAlias $HostAlias -UserName $UserName
+        $target = Resolve-FtDestination -Destination $name -Folder $Folder -Now $Now -Mappings $Mappings -HostAlias $HostAlias -UserName $UserName -Method $Method
         if ($target.Error) {
             $result.Error = if ($target.Error -eq 'ホスト名が正しくありません') { "ホスト名が正しくありません: $name" } else { $target.Error }
             return $result
@@ -176,7 +181,8 @@ function Resolve-FtDestinations {
         $targets += $target
     }
     if ($targets.Count -gt 1) {
-        $paths = @($targets | ForEach-Object { $_.Path.ToLowerInvariant() } | Select-Object -Unique)
+        # WinRM ではパス（C:\Work\...）が全台で同じになるので、ホスト名と組みにして比べる
+        $paths = @($targets | ForEach-Object { "$($_.HostName)|$($_.Path)".ToLowerInvariant() } | Select-Object -Unique)
         if ($paths.Count -lt $targets.Count) {
             $result.Error = '複数のサーバーに送るときは、フォルダを C:\Work のようなサーバー上のパスで指定してください'
             return $result

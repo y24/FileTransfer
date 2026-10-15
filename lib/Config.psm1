@@ -21,6 +21,7 @@ function Get-FtBuiltinConfig {
         window = @{}
         serverShareMappings = @()
         transfer = @{
+            method                = 'smb'       # サーバーへの転送方法: smb | winrm（設定画面で切り替える）
             retryCount            = 2
             retryWaitSec          = 3
             unbufferedThresholdMB = 256
@@ -28,6 +29,11 @@ function Get-FtBuiltinConfig {
             parallelHosts         = 3
             keepLocalCopy         = $false
             localCopyFolder       = "$downloads\Transfer\{datetime}"
+        }
+        winrm = @{
+            useSsl      = $false    # HTTPS（5986）で接続する
+            port        = 0         # 0 なら既定（HTTP 5985 / HTTPS 5986）
+            chunkSizeMB = 2         # 1 回に送る大きさ（最大 4）
         }
         log = @{
             retentionDays = 30
@@ -101,14 +107,52 @@ function Save-FtConfig {
     param([hashtable]$Config, [string]$UserConfigPath = $script:UserConfigPath)
     $userConfig = Read-FtJsonFile $UserConfigPath
     if ($null -eq $userConfig) { $userConfig = @{} }
-    $userConfig['version'] = 1
     foreach ($key in $script:UserStateKeys) {
         if ($Config.ContainsKey($key)) { $userConfig[$key] = $Config[$key] }
     }
+    Write-FtUserConfig $userConfig $UserConfigPath
+}
+
+# 設定画面で変えた 1 項目（transfer.method など）だけを、ユーザーの設定ファイルに書く
+# （同じ節のほかの項目は書かないので、配布側の settings.default.json の値がそのまま使われ続ける）
+function Set-FtUserSetting {
+    param([string]$Section, [string]$Name, $Value, [string]$UserConfigPath = $script:UserConfigPath)
+    $userConfig = Read-FtJsonFile $UserConfigPath
+    if ($null -eq $userConfig) { $userConfig = @{} }
+    if ($userConfig[$Section] -isnot [hashtable]) { $userConfig[$Section] = @{} }
+    $userConfig[$Section][$Name] = $Value
+    Write-FtUserConfig $userConfig $UserConfigPath
+}
+
+function Write-FtUserConfig {
+    param([hashtable]$UserConfig, [string]$UserConfigPath)
+    $UserConfig['version'] = 1
     $dir = Split-Path -Parent $UserConfigPath
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $json = $userConfig | ConvertTo-Json -Depth 8
+    $json = $UserConfig | ConvertTo-Json -Depth 8
     [System.IO.File]::WriteAllText($UserConfigPath, $json, (New-Object System.Text.UTF8Encoding $false))
+}
+
+# サーバーへの転送方法（smb | winrm。知らない値は smb）
+function Get-FtTransferMethod {
+    param([hashtable]$Config)
+    if ("$($Config.transfer.method)" -ieq 'winrm') { return 'winrm' }
+    return 'smb'
+}
+
+# WinRM の接続オプション（WinRm.psm1 に渡す形）
+function Get-FtWinRmOptions {
+    param([hashtable]$Config)
+    $winrm = $Config.winrm
+    if ($winrm -isnot [hashtable]) { $winrm = @{} }
+    $chunk = [double]$winrm.chunkSizeMB
+    if ($chunk -le 0) { $chunk = 2 }
+    # サーバーが 1 回に受け取れる大きさ（既定 10 MB。送るときは Base64 で約 1.4 倍になる）に収まるよう、4 MB までにする
+    return @{
+        UseSsl     = [bool]$winrm.useSsl
+        Port       = [int]$winrm.port
+        ChunkBytes = [long]([Math]::Min(4, $chunk) * 1MB)
+    }
 }
 
 # 履歴の先頭に Value を追加する（大文字小文字を区別せず重複を除き、最大 Max 件）
@@ -125,4 +169,4 @@ function Add-FtHistory {
     return , $items.ToArray()
 }
 
-Export-ModuleMember -Function Get-FtConfig, Save-FtConfig, Add-FtHistory, Merge-FtConfig, ConvertTo-FtHashtable, Get-FtBuiltinConfig
+Export-ModuleMember -Function Get-FtConfig, Save-FtConfig, Set-FtUserSetting, Get-FtTransferMethod, Get-FtWinRmOptions, Add-FtHistory, Merge-FtConfig, ConvertTo-FtHashtable, Get-FtBuiltinConfig

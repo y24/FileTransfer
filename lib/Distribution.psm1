@@ -64,8 +64,9 @@ function Remove-FtStageFolder {
 
 # 転送の取りまとめを作る
 #   Items:   @{ Path; IsFolder; Size }
-#   Targets: @{ Name; HostName; IsLocal; Dest }（Name は画面やログに出す名前）
-#   Options: RetryCount, RetryWaitSec, Threads, LargeThresholdBytes, ParallelHosts
+#   Targets: @{ Name; HostName; IsLocal; Dest; Method; Credential }（Name は画面やログに出す名前）
+#            Method が winrm の送り先は WinRM（WinRm.psm1）で、それ以外は robocopy で送る。Credential は WinRM で使う（なければ $null）
+#   Options: RetryCount, RetryWaitSec, Threads, LargeThresholdBytes, ParallelHosts, WinRm（Get-FtWinRmOptions の値）
 function New-FtDistribution {
     param(
         [object[]]$Items,
@@ -97,8 +98,10 @@ function New-FtDistribution {
         } else {
             New-FtTransferPlan -Items $Items -Destination $target.Dest -LargeThresholdBytes $threshold
         }
+        $method = if ($target.IsLocal) { 'local' } elseif ("$($target.Method)" -eq 'winrm') { 'winrm' } else { 'smb' }
         $hosts.Add(@{
             Name = $target.Name; HostName = $target.HostName; IsLocal = [bool]$target.IsLocal; Dest = $target.Dest
+            Method = $method; Credential = $target.Credential
             Steps = $steps; Sync = (New-FtSync); Job = $null; Status = 'pending'; Result = $null
             Bytes = (Get-FtStepsBytes $steps); Started = $null; Elapsed = 0.0
             Done = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -133,12 +136,21 @@ function Start-FtUnit {
     $options = $Distribution.Options
     $ps = [powershell]::Create()
     $ps.RunspacePool = $Distribution.Pool
-    [void]$ps.AddScript('param($Steps, $Sync, $RetryCount, $RetryWaitSec, $Threads) Invoke-FtTransferPlan -Steps $Steps -Sync $Sync -RetryCount $RetryCount -RetryWaitSec $RetryWaitSec -Threads $Threads')
-    [void]$ps.AddParameter('Steps', $Unit.Steps)
-    [void]$ps.AddParameter('Sync', $Unit.Sync)
-    [void]$ps.AddParameter('RetryCount', $(if ($null -ne $options.RetryCount) { [int]$options.RetryCount } else { 2 }))
-    [void]$ps.AddParameter('RetryWaitSec', $(if ($null -ne $options.RetryWaitSec) { [int]$options.RetryWaitSec } else { 3 }))
-    [void]$ps.AddParameter('Threads', $(if ($null -ne $options.Threads) { [int]$options.Threads } else { 8 }))
+    if ($Unit.Method -eq 'winrm') {
+        [void]$ps.AddScript('param($Steps, $Sync, $HostName, $Credential, $WinRm) Invoke-FtWinRmTransferPlan -Steps $Steps -Sync $Sync -HostName $HostName -Credential $Credential -WinRm $WinRm')
+        [void]$ps.AddParameter('Steps', $Unit.Steps)
+        [void]$ps.AddParameter('Sync', $Unit.Sync)
+        [void]$ps.AddParameter('HostName', $Unit.HostName)
+        [void]$ps.AddParameter('Credential', $Unit.Credential)
+        [void]$ps.AddParameter('WinRm', $(if ($options.WinRm) { $options.WinRm } else { @{} }))
+    } else {
+        [void]$ps.AddScript('param($Steps, $Sync, $RetryCount, $RetryWaitSec, $Threads) Invoke-FtTransferPlan -Steps $Steps -Sync $Sync -RetryCount $RetryCount -RetryWaitSec $RetryWaitSec -Threads $Threads')
+        [void]$ps.AddParameter('Steps', $Unit.Steps)
+        [void]$ps.AddParameter('Sync', $Unit.Sync)
+        [void]$ps.AddParameter('RetryCount', $(if ($null -ne $options.RetryCount) { [int]$options.RetryCount } else { 2 }))
+        [void]$ps.AddParameter('RetryWaitSec', $(if ($null -ne $options.RetryWaitSec) { [int]$options.RetryWaitSec } else { 3 }))
+        [void]$ps.AddParameter('Threads', $(if ($null -ne $options.Threads) { [int]$options.Threads } else { 8 }))
+    }
     $Unit.Job = @{ PowerShell = $ps; Handle = $ps.BeginInvoke() }
     $Unit.Status = 'running'
     $Unit.Started = Get-Date
@@ -324,13 +336,15 @@ function Get-FtRequiredBytes {
 }
 
 # 転送前に、送り先（と取得用のフォルダ）の空き容量を確かめる（バックグラウンドで呼ぶ）
+# Method が winrm の送り先は、サーバーに WinRM で接続して調べる
 # 戻り値: @{ Name; Path; Volume; Free; Required; Short } の配列。Free が -1 なら確認できなかった
 function Test-FtFreeSpace {
     param(
         [object[]]$Items,
         [object[]]$Targets,
         [string]$StageFolder = '',
-        [switch]$StageReused
+        [switch]$StageReused,
+        [hashtable]$WinRm = @{}
     )
     $checks = @()
     if ($StageFolder -and -not $StageReused) {
@@ -339,10 +353,19 @@ function Test-FtFreeSpace {
         if ($required -gt 0) { $checks += @{ Name = 'この PC（取得用）'; Path = $StageFolder; Required = $required } }
     }
     foreach ($target in $Targets) {
+        if ("$($target.Method)" -eq 'winrm' -and -not $target.IsLocal) {
+            $checks += @{ Target = $target }
+            continue
+        }
         $checks += @{ Name = $target.Name; Path = $target.Dest; Required = (Get-FtRequiredBytes -Items $Items -Dest $target.Dest) }
     }
     $results = @()
     foreach ($check in $checks) {
+        if ($check.Target) {
+            $target = $check.Target
+            $results += Get-FtWinRmFreeSpace -Name $target.Name -HostName $target.HostName -Credential $target.Credential -Path $target.Dest -Items $Items -WinRm $WinRm
+            continue
+        }
         $folder = Get-FtExistingFolder $check.Path
         $free = if ($folder) { [FileTransfer.Native]::GetFreeBytes($folder.TrimEnd('\') + '\') } else { -1L }
         $results += @{

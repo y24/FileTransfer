@@ -1,6 +1,6 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="FileTransfer" Width="400" Height="460" MinWidth="400" MaxWidth="400" MinHeight="420"
+        Title="FileTransfer" Width="400" Height="460" MinWidth="400" MinHeight="420"
         WindowStartupLocation="CenterScreen" ResizeMode="CanResize"
         Background="#F9F9F9" Foreground="{StaticResource TextBrush}"
         FontFamily="Segoe UI, Yu Gothic UI, Meiryo UI" FontSize="12.5"
@@ -25,11 +25,14 @@
         <ColumnDefinition Width="*"/>
         <ColumnDefinition Width="Auto"/>
         <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
       <TextBlock Text="送るファイル" FontWeight="SemiBold" VerticalAlignment="Center"/>
       <TextBlock x:Name="CountText" Grid.Column="1" Margin="8,0,0,0" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
       <Button x:Name="ClearButton" Grid.Column="2" Style="{StaticResource LinkButton}" Content="クリア" Margin="0,0,6,0" Visibility="Collapsed"/>
-      <Button x:Name="AddButton" Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="ファイルを追加"/>
+      <Button x:Name="AddFolderButton" Grid.Column="3" Style="{StaticResource IconButton}" Content="&#xE8F4;" Margin="0,0,4,0"
+              ToolTip="フォルダを追加（中のファイルをサブフォルダごと、フォルダの構成のまま送ります）"/>
+      <Button x:Name="AddButton" Grid.Column="4" Style="{StaticResource IconButton}" Content="&#xE710;" ToolTip="ファイルを追加"/>
     </Grid>
 
     <Border Grid.Row="1" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="4" Background="White" MinHeight="96">
@@ -106,13 +109,27 @@
         </ListBox>
         <StackPanel x:Name="EmptyHint" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
           <TextBlock Text="ファイルをここにドロップ" HorizontalAlignment="Center"/>
-          <TextBlock Text="または ＋ で選択、Ctrl+V で貼り付け" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+          <TextBlock Text="または 右上のボタンで選択、Ctrl+V で貼り付け" Foreground="{StaticResource MutedBrush}" HorizontalAlignment="Center" Margin="0,2,0,0"/>
+          <TextBlock Text="フォルダは中身ごと、フォルダの構成のまま送ります" Foreground="{StaticResource FaintBrush}" FontSize="11.5" HorizontalAlignment="Center" Margin="0,2,0,0"/>
         </StackPanel>
       </Grid>
     </Border>
 
-    <!-- 送り先 -->
-    <TextBlock Grid.Row="2" Text="送り先" FontWeight="SemiBold" Margin="0,14,0,4"/>
+    <!-- 送り先（右端は転送方法と設定） -->
+    <Grid Grid.Row="2" Margin="0,10,0,2">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <TextBlock Text="送り先" FontWeight="SemiBold" VerticalAlignment="Center"/>
+      <!-- 既定（SMB）以外で送るときだけ出す -->
+      <Border x:Name="MethodBadge" Grid.Column="1" Background="{StaticResource AccentSoftBrush}" CornerRadius="3" Padding="6,1"
+              VerticalAlignment="Center" Margin="0,0,4,0" Visibility="Collapsed">
+        <TextBlock x:Name="MethodText" Text="WinRM" FontSize="11.5" Foreground="{StaticResource PathBrush}"/>
+      </Border>
+      <Button x:Name="SettingsButton" Grid.Column="2" Style="{StaticResource ToolButton}" Content="&#xE713;" ToolTip="設定（サーバーへの転送方法）"/>
+    </Grid>
 
     <Grid Grid.Row="3">
       <ComboBox x:Name="DestBox" IsEditable="True" IsTextSearchEnabled="False" Height="30"

@@ -2,8 +2,9 @@
 
 共有フォルダ・この PC・仮想端末 の間で、ファイルを速く・手軽に転送するツールです。
 リモートデスクトップのコピー＆ペーストの代わりに、Windows のファイル共有（SMB）と robocopy で直接転送します。
+SMB で接続できないサーバーには、設定で WinRM（PowerShell リモート）に切り替えて送れます。
 
-- 送るファイルを選ぶ（＋、ドラッグ＆ドロップ、エクスプローラーでコピーして Ctrl+V）
+- 送るファイルを選ぶ（＋ でファイル、フォルダのボタンでフォルダ、ドラッグ＆ドロップ、エクスプローラーでコピーして Ctrl+V）
 - 送り先にホスト名（または「このPC」）とフォルダ（例: `C:\Work\{datetime}`）を入れる
 - ［転送開始］
 
@@ -28,6 +29,8 @@ Python などのインストールは不要で、Windows 10 / 11 標準の Power
 | 共有フォルダからこの PC に持ってくる | `このPC` | `D:\Transfer\{date}` |
 | この PC から共有フォルダに置く | `このPC` | `\\fs01\work\yamada\{date}` |
 
+- フォルダを送ると、中のファイルをサブフォルダごと、フォルダの構成のまま送ります（送り先に同じ名前のフォルダができます）。フォルダは右上のフォルダのボタン（複数選択可）、ドラッグ＆ドロップ、Ctrl+V で追加できます
+- ウィンドウは縦にも横にも広げられます（位置と大きさは次回も同じになります）
 - フォルダ欄で使えるテンプレート: `{datetime}`（20261015_1432）、`{date}`（20261015）、`{time}`（1432）、`{now:yyyy-MM-dd_HHmmss}`、`{user}`、`{host}`
 - 送り先とフォルダは ▾ から履歴を選べます
 - 送り先の左端の ● は接続状態です（緑: OK／黄: ログオンが必要／赤: 接続できない）。クリックすると接続するアカウントを変えられます
@@ -35,6 +38,17 @@ Python などのインストールは不要で、Windows 10 / 11 標準の Power
 - Ctrl+Enter で転送開始、Delete で選んだファイルを一覧から外せます
 - 転送前に送り先の空き容量を確認し、足りなければ「このまま転送しますか？」と聞きます
 - サーバーに別のユーザーで接続中（ネットワーク ドライブなど。エラー 1219）でログオンできないときは、［切断して再試行］でその接続を切断して接続し直せます（使用中のファイルがある接続は切りません）
+
+### SMB で接続できないサーバーに送る（WinRM）
+
+サーバーでファイル共有（SMB）が無効になっているなどで接続できないときは、「送り先」の見出しの右にある歯車（設定）で「サーバーへの転送方法」を **WinRM（PowerShell リモート）** に切り替えます（既定は SMB）。
+
+- 送り先の見出しの横に「WinRM」と出ている間は、サーバーへは WinRM で送ります。使い方（送り先・フォルダ・ログオン・複数台への配布）は SMB のときと同じです
+- フォルダ欄はサーバー上のパス（`C:\Work\{datetime}` など）で書きます（`\\サーバー\共有` の形は使えません）
+- ファイルを少しずつ（既定 2 MB ずつ）送るので、SMB より時間がかかります。送り先に同じファイル（サイズと更新日時が同じ）があれば送りません
+- 書き込み中は `名前.ftpart` に書き、書き終わってから名前を変えるので、中止や失敗で書きかけのファイルが残りません
+- ログオンで「資格情報を保存する」にすると、資格情報マネージャーの「汎用資格情報」に `FileTransfer:WinRM:ホスト名` として保存します（SMB 用とは別です）
+- 「このPC」への転送や、共有フォルダからの読み込みには影響しません。設定はユーザーごとに `%APPDATA%\FileTransfer\settings.json` に保存されます
 
 ### 複数のサーバーに配る
 
@@ -68,6 +82,7 @@ FileTransfer.bat -Destination このPC -Folder D:\Transfer\{date} \\fs01\release
 | `-KeepLocalCopy` | 共有のファイルを、この PC にもコピーして残す |
 | `-DisconnectExisting` | 別のユーザーで接続中（エラー 1219）のサーバーは、その接続を切断してからログオンし直す |
 | `-SkipSpaceCheck` | 送り先の空き容量が足りなくても転送する |
+| `-Method SMB\|WinRM` | サーバーへの転送方法（省略すると設定画面で選んだ方法） |
 | `-WhatIf` | 送り先・空き容量・robocopy のコマンドを表示するだけで、転送しない |
 
 - 終了コード: `0` 成功 / `1` 転送に失敗（一部の台だけ失敗した場合も含む）/ `2` 指定の誤り・接続できない・ログオンが必要・空き容量が足りない
@@ -76,16 +91,23 @@ FileTransfer.bat -Destination このPC -Folder D:\Transfer\{date} \\fs01\release
 
 ## サーバー側の前提
 
+SMB（既定）:
+
 - クライアント PC からサーバーのファイル共有（TCP 445）に接続できること
 - 管理共有（`C$` など）が有効で、接続するアカウントがサーバーの管理者であること
 - ローカルアカウントの場合、組み込みの Administrator 以外は Windows の仕様で管理共有に接続できないことがあります。その場合はサーバーに転送用の共有を作り、`settings.default.json` の `serverShareMappings` に登録します（詳しくは設計書 11 章）
+
+WinRM:
+
+- サーバーで PowerShell リモート（WinRM。TCP 5985）が有効で、接続するアカウントがサーバーの管理者（または Remote Management Users）であること
+- ドメインに参加していないサーバーや IP アドレスで接続するときは、この PC の WinRM の TrustedHosts にサーバーを登録するか、HTTPS（`winrm.useSsl`）で接続する必要があります
 
 ## 設定
 
 | ファイル | 内容 |
 |----------|------|
-| `settings.default.json`（このフォルダ） | 管理者が配る既定値。サーバーの一覧、`serverShareMappings`、転送オプションなど |
-| `%APPDATA%\FileTransfer\settings.json` | ユーザーごとの履歴・前回の値・ウィンドウ位置 |
+| `settings.default.json`（このフォルダ） | 管理者が配る既定値。サーバーの一覧、`serverShareMappings`、転送オプション、サーバーへの転送方法の既定（`transfer.method`）、WinRM の接続オプション（`winrm`）など |
+| `%APPDATA%\FileTransfer\settings.json` | ユーザーごとの履歴・前回の値・ウィンドウの位置と大きさ・設定画面で選んだ転送方法 |
 | `%LOCALAPPDATA%\FileTransfer\logs\` | 転送ログ（1 日 1 ファイル、30 日で削除） |
 
 項目の一覧は [docs/design.md](docs/design.md) の 8 章にあります。
@@ -100,7 +122,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\Run-Tests.ps1
 powershell -NoProfile -STA -ExecutionPolicy Bypass -File tests\Render-Screens.ps1 -OutDir screens
 ```
 
-- `Run-Tests.ps1`: パス解決、実行計画、robocopy の出力解析、実際の転送、複数台への配布、中止、コマンドライン実行などの自動テスト
+- `Run-Tests.ps1`: パス解決、実行計画、robocopy の出力解析、実際の転送、複数台への配布、中止、WinRM での転送、コマンドライン実行などの自動テスト
 - `Render-Screens.ps1`: アプリを画面外に表示して操作し、各状態の画面を PNG に保存します（自分自身の管理共有を `PC名` と `127.0.0.1` の 2 台に見立てた配布も行います）
+- WinRM のテストは、環境変数 `FILETRANSFER_TEST_WINRM_LOCAL` を設定して、この PC に起動した別の PowerShell をサーバーの代わりにします（WinRM を有効にしなくても、リモートと同じく値がシリアル化される経路で動きます）
 - `.ps1` / `.psm1` は **BOM 付き UTF-8** で保存してください（Windows PowerShell 5.1 は BOM なしの UTF-8 を Shift-JIS として読みます）。`.cs` と `.bat` は ASCII のみにしてください
 - 設計書: [docs/design.md](docs/design.md)、UI モック: [docs/ui-mock.html](docs/ui-mock.html)
