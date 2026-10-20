@@ -96,6 +96,8 @@ SMB（既定）:
 - クライアント PC からサーバーのファイル共有（TCP 445）に接続できること
 - 管理共有（`C$` など）が有効で、接続するアカウントがサーバーの管理者であること
 - ローカルアカウントの場合、組み込みの Administrator 以外は Windows の仕様で管理共有に接続できないことがあります。その場合はサーバーに転送用の共有を作り、`settings.default.json` の `serverShareMappings` に登録します（詳しくは設計書 11 章）
+- これらが満たされていないサーバーでは、`tools\EnableSMB.bat` をサーバーにコピーしてダブルクリックすると設定できます（管理者権限がなければ UAC の確認を出して起動し直します）。Server サービスの起動、管理共有・SMB2/3 の有効化、ファイアウォールの「ファイルとプリンターの共有」の受信規則の有効化、ローカルアカウントでも管理共有に接続できる設定（`LocalAccountTokenFilterPolicy = 1`）を行います。すでにそうなっている項目は変更しません
+- 元に戻すときは `tools\DisableSMB.bat` を同じように実行します。`EnableSMB.bat` が変更した項目だけを元の値に戻します（元の値は `HKLM\SOFTWARE\FileTransfer\EnableSMB` に記録しています）。記録がないサーバーでは、ファイアウォールの受信規則を無効にして `LocalAccountTokenFilterPolicy` を削除し、外部から接続できないようにするだけです
 
 WinRM:
 
