@@ -10,13 +10,14 @@ function Get-FtBuiltinConfig {
         version = 1
         history = @{
             destinations  = @()
-            serverFolders = @('C:\Work\{datetime}')
-            localFolders  = @("$downloads\Transfer\{datetime}")
+            serverFolders = @('C:\Work\{date}')
+            localFolders  = @("$downloads\Transfer\{date}")
             lastOpenDir   = ''
         }
         last = @{
             destination = ''
             folder      = ''
+            items       = @()   # 送るファイル・フォルダ（次の起動で復元する）
         }
         window = @{}
         serverShareMappings = @()

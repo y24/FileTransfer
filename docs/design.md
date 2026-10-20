@@ -393,8 +393,8 @@ flowchart TD
 
 | テンプレート | 展開例（2026-10-15 14:32:10 開始） | 備考 |
 |-------------|-------------------------------------|------|
-| `{datetime}` | `20261015_1432` | 既定 |
-| `{date}` | `20261015` | |
+| `{datetime}` | `20261015_1432` | |
+| `{date}` | `20261015` | 既定 |
 | `{time}` | `1432` | |
 | `{now:書式}` | `{now:yyyy-MM-dd_HHmmss}` → `2026-10-15_143210` | .NET の日時書式を自由に指定 |
 | `{user}` | `yamada` | Windows のログオンユーザー名 |
@@ -682,7 +682,8 @@ flowchart LR
   },
   "last": {
     "destination": "SV-APP01",
-    "folder": "C:\\Work\\{datetime}"
+    "folder": "C:\\Work\\{date}",
+    "items": ["\\\\fs01\\patches\\2026-10\\KB5031234.msu"]
   },
   "window": { "left": 200, "top": 160, "width": 400, "height": 460 },
   "serverShareMappings": [

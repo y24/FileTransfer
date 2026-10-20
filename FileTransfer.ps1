@@ -485,6 +485,7 @@ function Add-FtPaths {
         $added++
     }
     if ($added -gt 0 -or $skipped.Count -gt 0) { Exit-FtFinished }
+    if ($added -gt 0) { Save-FtItems }
     if ($skipped.Count -gt 0) {
         Show-FtNotice ('同じ名前のファイルがあるため追加しませんでした：' + ($skipped -join '、')) 'warn'
     }
@@ -496,7 +497,15 @@ function Remove-FtItems {
     if ($script:Phase -eq 'running') { return }
     foreach ($item in @($Items)) { if ($null -ne $item) { [void]$script:Items.Remove($item) } }
     Exit-FtFinished
+    Save-FtItems
     Update-FtView
+}
+
+# 送るファイルの一覧を設定に保存する（次に起動したときに復元する）
+function Save-FtItems {
+    if ($script:Config.last -isnot [hashtable]) { $script:Config.last = @{} }
+    $script:Config.last.items = [string[]]@($script:Items | ForEach-Object { $_.Path })
+    Save-FtSettings
 }
 
 function Show-FtOpenDialog {
@@ -1493,7 +1502,7 @@ $window.Add_Closing({
     if ($window.WindowState -eq 'Normal') {
         $script:Config.window = @{ left = [int]$window.Left; top = [int]$window.Top; width = [int]$window.Width; height = [int]$window.Height }
     }
-    $script:Config.last = @{ destination = (Get-FtDestText); folder = (Get-FtFolderText) }
+    $script:Config.last = @{ destination = (Get-FtDestText); folder = (Get-FtFolderText); items = [string[]]@($script:Items | ForEach-Object { $_.Path }) }
     Save-FtSettings
 })
 
@@ -1547,6 +1556,13 @@ function Initialize-FtWindow {
     Set-FtComboText $ui.FolderBox $script:LastFolder[$script:DestKind]
     Request-FtHostCheck -Immediate
     $script:Timer.Start()
+
+    # 前回の送るファイルを復元する（消えたもの・読めなくなったものは Add-FtPaths が飛ばし、一覧から外れる）
+    $savedItems = @($last.items | Where-Object { $_ })
+    if ($savedItems.Count -gt 0) {
+        Add-FtPaths $savedItems
+        if ($script:Items.Count -ne $savedItems.Count) { Save-FtItems }
+    }
 }
 
 Initialize-FtWindow

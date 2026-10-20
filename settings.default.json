@@ -1,7 +1,7 @@
 {
   "history": {
     "destinations": [],
-    "serverFolders": ["C:\\Work\\{datetime}", "C:\\Work\\{date}"]
+    "serverFolders": ["C:\\work\\{date}", "C:\\work\\{datetime}"]
   },
   "serverShareMappings": [],
   "transfer": {
