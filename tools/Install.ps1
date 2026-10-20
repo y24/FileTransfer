@@ -26,7 +26,7 @@ $source = Split-Path -Parent $PSScriptRoot
 trap {
     if (-not $Restart) { break }
     Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.MessageBox]::Show("FileTransfer を更新できませんでした。`n$($_.Exception.Message)`n`nコピー元の install.bat を実行して更新してください:`n$source",
+    [System.Windows.Forms.MessageBox]::Show("FileTransfer を更新できませんでした。`n$($_.Exception.Message)`n`n再度やり直すか、install.bat を手動実行して更新してください:`n$source",
         'FileTransfer', 'OK', 'Error') | Out-Null
     exit 1
 }

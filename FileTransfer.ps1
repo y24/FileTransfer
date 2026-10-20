@@ -540,7 +540,7 @@ function Show-FtOpenDialog {
 # フォルダを選ぶ（複数可）。フォルダは中のファイルをサブフォルダごと、フォルダの構成のまま送る
 function Show-FtFolderDialog {
     $handle = (New-Object System.Windows.Interop.WindowInteropHelper $window).Handle
-    $folders = @([FileTransfer.Native]::PickFolders($handle, '送るフォルダを選択（中のファイルをフォルダごと送ります）', "$($script:Config.history.lastOpenDir)"))
+    $folders = @([FileTransfer.Native]::PickFolders($handle, '送るフォルダを選択（配下のファイルをフォルダごと転送）', "$($script:Config.history.lastOpenDir)"))
     if ($folders.Count -eq 0) { return }
     # 次に開くときは、選んだフォルダがあるフォルダから
     $parent = [System.IO.Path]::GetDirectoryName($folders[0].TrimEnd('\'))
@@ -1630,7 +1630,7 @@ function Request-FtUpdateCheck {
         param($value, $err, $context)
         if ($err) { Write-FtLog "更新の確認に失敗しました: $($err.Message)"; return }
         if (-not $value -or $script:Phase -eq 'running') { return }
-        $message = "新しいバージョンの FileTransfer があるため、更新を行います。`n［OK］を押すと自動で再起動します。`n`nSource: $($value.Source)"
+        $message = "新しいバージョンのがあるため、更新を行います。`n［OK］で自動で再起動します。`nSource: $($value.Source)"
         [void][System.Windows.MessageBox]::Show($window, $message, 'FileTransfer', 'OK', 'Information')
         if ($script:Phase -eq 'running') { return }
         Write-FtLog "更新します: $($value.Source)"
