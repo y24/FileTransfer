@@ -1,5 +1,5 @@
 ﻿# コマンドラインからの実行（画面を出さずに転送する）
-#   FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder 'C:\Work\{datetime}' \\fs01\patches\*.msu
+#   FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder 'C:\work\{datetime}' \\fs01\patches\*.msu
 # 終了コード: 0 成功 / 1 転送に失敗（一部の送り先を含む）/ 2 指定の誤り・接続できない・空き容量が足りない
 # Ctrl+C で止めると、実行中の robocopy も止める
 
@@ -8,7 +8,7 @@ $script:Usage = @'
   FileTransfer.bat -Destination <送り先> -Folder <フォルダ> <送るファイル...>
 
   -Destination  ホスト名（カンマ区切りで複数可）または このPC
-  -Folder       送り先のフォルダ。サーバーなら C:\Work\{datetime} のようにサーバー上のパスで書く
+  -Folder       送り先のフォルダ。サーバーなら C:\work\{datetime} のようにサーバー上のパスで書く
   送るファイル   ファイルやフォルダのパス（* ? も使える）。スペースを含むときは "" で囲む
 
   -Credential <ユーザー名>  ログオンが必要なサーバーに、このアカウントで接続する（パスワードを聞かれる）
@@ -24,9 +24,9 @@ $script:Usage = @'
 終了コード: 0 成功 / 1 転送に失敗（一部の送り先を含む）/ 2 指定の誤り・接続できない・空き容量が足りない
 
 例:
-  FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\Work\{datetime} \\fs01\patches\2026-10\*.msu
+  FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\work\{datetime} \\fs01\patches\2026-10\*.msu
   FileTransfer.bat -Destination このPC -Folder D:\Transfer\{date} \\fs01\release\app\setup.exe
-  FileTransfer.bat -Destination SV-APP01 -Folder C:\Work\{datetime} -Method WinRM D:\build\app
+  FileTransfer.bat -Destination SV-APP01 -Folder C:\work\{datetime} -Method WinRM D:\build\app
 '@
 
 function Write-FtCli {

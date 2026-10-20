@@ -23,7 +23,7 @@
         <TextBlock Text="WinRM（PowerShell リモート）" FontWeight="SemiBold"/>
       </RadioButton>
       <TextBlock x:Name="WinRmText" Margin="20,2,0,0" TextWrapping="Wrap" Foreground="{StaticResource MutedBrush}" FontSize="12"
-                 Text="SMB で接続できないサーバー向けです。PowerShell リモート（5985 番ポート）でファイルを送ります。SMB より時間がかかります。フォルダはサーバー上のパス（C:\Work など）で指定します。"/>
+                 Text="SMB で接続できないサーバー向けです。PowerShell リモート（5985 番ポート）でファイルを送ります。SMB より時間がかかります。フォルダはサーバー上のパス（C:\work など）で指定します。"/>
 
       <TextBlock Margin="0,14,0,0" TextWrapping="Wrap" Foreground="{StaticResource FaintBrush}" FontSize="11.5"
                  Text="「このPC」への転送には影響しません。共有フォルダから読むときは、どちらの方法でもファイル共有を使います。"/>

@@ -43,32 +43,32 @@ Assert-Equal '20261015_1432' (Expand-FtTemplate '{datetime}' -Now $now) 'datetim
 Assert-Equal '20261015' (Expand-FtTemplate '{date}' -Now $now) 'date'
 Assert-Equal '1432' (Expand-FtTemplate '{time}' -Now $now) 'time'
 Assert-Equal '2026-10-15_143210' (Expand-FtTemplate '{now:yyyy-MM-dd_HHmmss}' -Now $now) 'now:format'
-Assert-Equal 'C:\Work\20261015_KB5031234' (Expand-FtTemplate 'C:\Work\{date}_KB5031234' -Now $now) 'fixed text'
+Assert-Equal 'C:\work\20261015_KB5031234' (Expand-FtTemplate 'C:\work\{date}_KB5031234' -Now $now) 'fixed text'
 Assert-Equal 'yamada_SV-APP01' (Expand-FtTemplate '{user}_{host}' -Now $now -HostName 'SV-APP01' -UserName 'yamada') 'user/host'
 Assert-Equal '{unknown}' (Expand-FtTemplate '{unknown}' -Now $now) 'unknown token is kept'
 Assert-Equal '20261015' (Expand-FtTemplate '{DATE}' -Now $now) 'case-insensitive'
 
 Section 'Resolve-FtDestination'
-$r = Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\Work\{datetime}' -Now $now
-Assert-Equal '\\SV-APP01\C$\Work\20261015_1432' $r.Path 'server path'
+$r = Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\work\{datetime}' -Now $now
+Assert-Equal '\\SV-APP01\C$\work\20261015_1432' $r.Path 'server path'
 Assert-Equal '\\SV-APP01\C$' $r.ShareRoot 'server share root'
 Assert-True (-not $r.IsLocal) 'server is not local'
 $r = Resolve-FtDestination -Destination 'sv-app01' -Folder 'd:\deploy\' -Now $now
 Assert-Equal '\\SV-APP01\D$\deploy' $r.Path 'lowercase host / drive / trailing backslash'
 $r = Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\' -Now $now
 Assert-Equal '\\SV-APP01\C$' $r.Path 'server drive root'
-$r = Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:/Work/x' -Now $now
-Assert-Equal '\\SV-APP01\C$\Work\x' $r.Path 'forward slashes'
-$mappings = @(@{ host = 'SV-LEGACY01'; serverPath = 'C:\Work'; share = '\\SV-LEGACY01\Work$' })
-$r = Resolve-FtDestination -Destination 'SV-LEGACY01' -Folder 'C:\Work\{date}' -Now $now -Mappings $mappings
+$r = Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:/work/x' -Now $now
+Assert-Equal '\\SV-APP01\C$\work\x' $r.Path 'forward slashes'
+$mappings = @(@{ host = 'SV-LEGACY01'; serverPath = 'C:\work'; share = '\\SV-LEGACY01\Work$' })
+$r = Resolve-FtDestination -Destination 'SV-LEGACY01' -Folder 'C:\work\{date}' -Now $now -Mappings $mappings
 Assert-Equal '\\SV-LEGACY01\Work$\20261015' $r.Path 'share mapping'
 Assert-Equal '\\SV-LEGACY01\Work$' $r.ShareRoot 'share mapping root'
-$r = Resolve-FtDestination -Destination 'SV-LEGACY01' -Folder 'C:\Workspace' -Now $now -Mappings $mappings
-Assert-Equal '\\SV-LEGACY01\C$\Workspace' $r.Path 'mapping matches whole folder names only'
+$r = Resolve-FtDestination -Destination 'SV-LEGACY01' -Folder 'C:\workspace' -Now $now -Mappings $mappings
+Assert-Equal '\\SV-LEGACY01\C$\workspace' $r.Path 'mapping matches whole folder names only'
 $r = Resolve-FtDestination -Destination 'SV-APP01' -Folder '\\SV-APP01\Deploy$\{date}' -Now $now
 Assert-Equal '\\SV-APP01\Deploy$\20261015' $r.Path 'server with UNC folder'
-$r = Resolve-FtDestination -Destination 'SV-WEB01' -Folder 'C:\Work' -Now $now -HostAlias @{ 'SV-WEB01' = 'sv-web01.corp.example' }
-Assert-Equal '\\sv-web01.corp.example\C$\Work' $r.Path 'host alias'
+$r = Resolve-FtDestination -Destination 'SV-WEB01' -Folder 'C:\work' -Now $now -HostAlias @{ 'SV-WEB01' = 'sv-web01.corp.example' }
+Assert-Equal '\\sv-web01.corp.example\C$\work' $r.Path 'host alias'
 $r = Resolve-FtDestination -Destination 'このPC' -Folder 'D:\Transfer\{date}' -Now $now
 Assert-Equal 'D:\Transfer\20261015' $r.Path 'local path'
 Assert-True $r.IsLocal 'local flag'
@@ -78,41 +78,41 @@ $r = Resolve-FtDestination -Destination 'このPC' -Folder '%USERPROFILE%\x' -No
 Assert-Equal "$env:USERPROFILE\x" $r.Path 'environment variable (local only)'
 $r = Resolve-FtDestination -Destination 'このPC' -Folder 'D:\' -Now $now
 Assert-Equal 'D:\' $r.Path 'local drive root'
-Assert-True ([bool](Resolve-FtDestination -Destination '' -Folder 'C:\Work').Error) 'empty host is an error'
-Assert-True ([bool](Resolve-FtDestination -Destination 'SV APP' -Folder 'C:\Work').Error) 'invalid host is an error'
+Assert-True ([bool](Resolve-FtDestination -Destination '' -Folder 'C:\work').Error) 'empty host is an error'
+Assert-True ([bool](Resolve-FtDestination -Destination 'SV APP' -Folder 'C:\work').Error) 'invalid host is an error'
 Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder '').Error) 'empty folder is an error'
-Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\Work\a?b').Error) 'invalid character'
+Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\work\a?b').Error) 'invalid character'
 Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder 'Work').Error) 'relative path'
-Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\Work\{now:HH:mm}' -Now $now).Error) 'template that produces a colon'
+Assert-True ([bool](Resolve-FtDestination -Destination 'SV-APP01' -Folder 'C:\work\{now:HH:mm}' -Now $now).Error) 'template that produces a colon'
 Assert-True ([bool](Resolve-FtDestination -Destination 'このPC' -Folder 'Transfer').Error) 'local relative path'
 
 Section 'Multiple destinations'
 Assert-Equal 'SV-APP01|sv-app02|SV-DB02' ((Split-FtDestinations 'SV-APP01, sv-app02;SV-DB02  sv-app01') -join '|') 'split by comma, semicolon, space; duplicates removed'
 Assert-Equal 'このPC' ((Split-FtDestinations 'この PC') -join '|') 'この PC with a space'
 Assert-Equal 'SV-APP01, SV-APP02' (Format-FtDestinations @('sv-app01', 'SV-APP02')) 'format'
-$r = Resolve-FtDestinations -Destination 'SV-APP01, SV-APP02' -Folder 'C:\Work\{datetime}' -Now $now
-Assert-Equal '\\SV-APP01\C$\Work\20261015_1432|\\SV-APP02\C$\Work\20261015_1432' (($r.Targets | ForEach-Object { $_.Path }) -join '|') 'one path per server, same timestamp'
+$r = Resolve-FtDestinations -Destination 'SV-APP01, SV-APP02' -Folder 'C:\work\{datetime}' -Now $now
+Assert-Equal '\\SV-APP01\C$\work\20261015_1432|\\SV-APP02\C$\work\20261015_1432' (($r.Targets | ForEach-Object { $_.Path }) -join '|') 'one path per server, same timestamp'
 Assert-True ($r.IsMulti -and -not $r.IsLocal -and -not $r.Error) 'multi flags'
 $r = Resolve-FtDestinations -Destination 'SV-APP01,SV-APP02' -Folder '\\{host}\Deploy$\{date}' -Now $now
 Assert-Equal '\\SV-APP01\Deploy$\20261015|\\SV-APP02\Deploy$\20261015' (($r.Targets | ForEach-Object { $_.Path }) -join '|') 'UNC with {host} differs per server'
 Assert-True ([bool](Resolve-FtDestinations -Destination 'SV-APP01,SV-APP02' -Folder '\\fs01\work\x').Error) 'same UNC for every server is an error'
-Assert-True ((Resolve-FtDestinations -Destination 'このPC, SV-APP01' -Folder 'C:\Work').Error -like '*このPC*') 'this PC and servers cannot be mixed'
-Assert-True ((Resolve-FtDestinations -Destination 'SV-APP01, SV_APP 02!' -Folder 'C:\Work').Error -like '*02!*') 'invalid host name is named'
+Assert-True ((Resolve-FtDestinations -Destination 'このPC, SV-APP01' -Folder 'C:\work').Error -like '*このPC*') 'this PC and servers cannot be mixed'
+Assert-True ((Resolve-FtDestinations -Destination 'SV-APP01, SV_APP 02!' -Folder 'C:\work').Error -like '*02!*') 'invalid host name is named'
 $r = Resolve-FtDestinations -Destination 'このPC' -Folder 'D:\Transfer\{date}' -Now $now
 Assert-True ($r.IsLocal -and $r.Targets.Count -eq 1 -and $r.Targets[0].Path -eq 'D:\Transfer\20261015') 'single local destination'
-Assert-True ([bool](Resolve-FtDestinations -Destination '' -Folder 'C:\Work').Error) 'empty destination'
+Assert-True ([bool](Resolve-FtDestinations -Destination '' -Folder 'C:\work').Error) 'empty destination'
 
 Section 'Resolve (WinRM)'
-$r = Resolve-FtDestination -Destination 'sv-app01' -Folder 'C:\Work\{datetime}' -Now $now -Method winrm
-Assert-Equal 'C:\Work\20261015_1432|SV-APP01|winrm' ('{0}|{1}|{2}' -f $r.Path, $r.HostName, $r.Method) 'WinRM keeps the server path'
+$r = Resolve-FtDestination -Destination 'sv-app01' -Folder 'C:\work\{datetime}' -Now $now -Method winrm
+Assert-Equal 'C:\work\20261015_1432|SV-APP01|winrm' ('{0}|{1}|{2}' -f $r.Path, $r.HostName, $r.Method) 'WinRM keeps the server path'
 Assert-True ($null -eq $r.ShareRoot) 'WinRM has no share root'
-$r = Resolve-FtDestination -Destination 'SV-LEGACY01' -Folder 'C:\Work\x' -Now $now -Mappings $mappings -Method winrm
-Assert-Equal 'C:\Work\x' $r.Path 'WinRM ignores share mappings'
+$r = Resolve-FtDestination -Destination 'SV-LEGACY01' -Folder 'C:\work\x' -Now $now -Mappings $mappings -Method winrm
+Assert-Equal 'C:\work\x' $r.Path 'WinRM ignores share mappings'
 $r = Resolve-FtDestination -Destination 'SV-APP01' -Folder 'D:\' -Now $now -Method winrm
 Assert-Equal 'D:\' $r.Path 'WinRM drive root'
 Assert-True ((Resolve-FtDestination -Destination 'SV-APP01' -Folder '\\SV-APP01\Deploy$\x' -Method winrm).Error -like '*WinRM*') 'WinRM rejects a UNC folder'
-$r = Resolve-FtDestinations -Destination 'SV-APP01, SV-APP02' -Folder 'C:\Work\{datetime}' -Now $now -Method winrm
-Assert-True (-not $r.Error -and $r.Targets.Count -eq 2 -and $r.Targets[1].Path -eq 'C:\Work\20261015_1432') 'WinRM: the same server path on several servers is fine'
+$r = Resolve-FtDestinations -Destination 'SV-APP01, SV-APP02' -Folder 'C:\work\{datetime}' -Now $now -Method winrm
+Assert-True (-not $r.Error -and $r.Targets.Count -eq 2 -and $r.Targets[1].Path -eq 'C:\work\20261015_1432') 'WinRM: the same server path on several servers is fine'
 $r = Resolve-FtDestinations -Destination 'このPC' -Folder 'D:\Transfer' -Now $now -Method winrm
 Assert-True ($r.IsLocal -and $r.Targets[0].Method -eq 'local') 'this PC is not affected by WinRM'
 
@@ -123,13 +123,13 @@ Assert-Equal 'a' ((Add-FtHistory @('a') '  ') -join '|') 'blank is ignored'
 $merged = Merge-FtConfig @{ a = 1; nested = @{ x = 1; y = 2 } } @{ nested = @{ y = 3 }; b = 2 }
 Assert-Equal '1|1|3|2' ('{0}|{1}|{2}|{3}' -f $merged.a, $merged.nested.x, $merged.nested.y, $merged.b) 'deep merge'
 $config = Get-FtConfig -AppRoot $root
-Assert-True ($config.history.serverFolders -contains 'C:\Work\{datetime}') 'settings.default.json is read'
+Assert-True ($config.history.serverFolders -contains 'C:\work\{datetime}') 'settings.default.json is read'
 $config.history.destinations = @('SV-APP01')
-$config.last = @{ destination = 'SV-APP01'; folder = 'C:\Work\{date}' }
+$config.last = @{ destination = 'SV-APP01'; folder = 'C:\work\{date}' }
 Save-FtConfig $config
 $reloaded = Get-FtConfig -AppRoot $root
 Assert-Equal 'SV-APP01' (@($reloaded.history.destinations) -join '|') 'single-item array survives a save'
-Assert-Equal 'C:\Work\{date}' $reloaded.last.folder 'save and reload'
+Assert-Equal 'C:\work\{date}' $reloaded.last.folder 'save and reload'
 $userFile = Get-Content -LiteralPath $env:FILETRANSFER_CONFIG -Raw -Encoding UTF8 | ConvertFrom-Json
 Assert-True ($null -eq $userFile.transfer) 'transfer settings are not copied into the user file'
 # ユーザーが自分で書いた項目は保存しても残る
@@ -190,16 +190,16 @@ $items = @(
     @{ Path = '\\fs01\patches\KB2.msu'; IsFolder = $false; Size = 10MB },
     @{ Path = 'C:\build\app'; IsFolder = $true; Size = 50MB }
 )
-$steps = New-FtTransferPlan -Items $items -Destination '\\SV\C$\Work\x'
+$steps = New-FtTransferPlan -Items $items -Destination '\\SV\C$\work\x'
 Assert-Equal 3 $steps.Count 'files grouped by parent folder, folder separately'
 Assert-Equal 'KB1.msu|KB2.msu' ($steps[0].Files -join '|') 'group keeps both files from the same folder'
 Assert-True $steps[0].Large 'large flag'
 Assert-True (-not $steps[1].Large) 'small group is not large'
-Assert-Equal '\\SV\C$\Work\x\app' $steps[2].Dest 'folder goes into a subfolder with the same name'
+Assert-Equal '\\SV\C$\work\x\app' $steps[2].Dest 'folder goes into a subfolder with the same name'
 $arguments = Get-FtRobocopyArguments -Step $steps[0]
-Assert-True ($arguments -like '"\\fs01\patches" "\\SV\C$\Work\x" "KB1.msu" "KB2.msu" /R:2 /W:3 /J *') 'file arguments'
+Assert-True ($arguments -like '"\\fs01\patches" "\\SV\C$\work\x" "KB1.msu" "KB2.msu" /R:2 /W:3 /J *') 'file arguments'
 Assert-True ((Get-FtRobocopyArguments -Step $steps[2]) -like '* /E /MT:8 *') 'folder arguments'
-$staged = New-FtTransferPlan -Items $items -Destination '\\SV\C$\Work\x' -StageFolder 'D:\Transfer\x'
+$staged = New-FtTransferPlan -Items $items -Destination '\\SV\C$\work\x' -StageFolder 'D:\Transfer\x'
 # 1: 共有 → ローカル（KB1, KB2）  2: ローカルのコピー → サーバー（KB1, KB2）  3: config.zip  4: app フォルダ
 Assert-Equal 4 $staged.Count 'staging adds one step'
 Assert-True (-not $staged[0].Final -and $staged[0].Dest -eq 'D:\Transfer\x' -and ($staged[0].Files -join '|') -eq 'KB1.msu|KB2.msu') 'staging step goes to the local folder'
@@ -208,7 +208,7 @@ Assert-Equal 'C:\Users\u\Downloads' $staged[2].Source 'local files are not stage
 Assert-True ($staged[1].Items -contains '\\fs01\patches\KB1.msu') 'final step still reports the original items'
 $stageOnly = New-FtTransferPlan -Items $items -StageFolder 'D:\Transfer\x' -StageOnly
 Assert-True ($stageOnly.Count -eq 1 -and -not $stageOnly[0].Final) '-StageOnly makes only the staging step'
-$fromStage = New-FtTransferPlan -Items $items -Destination '\\SV\C$\Work\x' -StageFolder 'D:\Transfer\x' -FromStage
+$fromStage = New-FtTransferPlan -Items $items -Destination '\\SV\C$\work\x' -StageFolder 'D:\Transfer\x' -FromStage
 Assert-True ($fromStage.Count -eq 3 -and $fromStage[0].Source -eq 'D:\Transfer\x' -and $fromStage[0].Final) '-FromStage reads shared files from the local copy'
 Assert-True ($null -eq (Get-FtStageFolder -Items $items -TargetCount 1 -IsLocal $false -KeepLocalCopy $false -LocalCopyFolder 'x' -Now $now)) 'one server: no staging'
 $stageInfo = Get-FtStageFolder -Items $items -TargetCount 2 -IsLocal $false -KeepLocalCopy $false -LocalCopyFolder 'x' -Now $now
@@ -366,7 +366,7 @@ Assert-True ((Format-FtFreeSpace $space[1]) -like 'このPC（C:）：空き * �
 Assert-Equal '1.50 TB' ([FileTransfer.FileItem]::FormatSize(1.5TB)) 'size TB'
 $space = Test-FtFreeSpace -Items $hugeItem -Targets @(@{ Name = 'このPC'; Dest = "$WorkDir\space\new" }) -StageFolder "$WorkDir\stage" -StageReused
 Assert-Equal 1 $space.Count 'a reused staging folder is not checked again'
-$space = Test-FtFreeSpace -Items @($spaceItems[0]) -Targets @(@{ Name = 'x'; Dest = '\\ft-nonexistent-host.invalid\C$\Work' })
+$space = Test-FtFreeSpace -Items @($spaceItems[0]) -Targets @(@{ Name = 'x'; Dest = '\\ft-nonexistent-host.invalid\C$\work' })
 Assert-True ($space[0].Free -eq -1 -and -not $space[0].Short) 'unknown free space is not reported as a shortage'
 
 Section 'Distribution (two destinations, staging, partial failure)'
@@ -612,9 +612,9 @@ if ([FileTransfer.Native]::GetFreeBytes("$WorkDir\") -lt 1TB) {
     Write-Host '    (info) more than 1 TB free; shortage test skipped' -ForegroundColor Yellow
 }
 [IO.File]::Delete($sparse)
-$cli = Invoke-Cli @('-Destination', 'ft-nonexistent-host.invalid', '-Folder', 'C:\Work', "$src\日本語ファイル.txt")
+$cli = Invoke-Cli @('-Destination', 'ft-nonexistent-host.invalid', '-Folder', 'C:\work', "$src\日本語ファイル.txt")
 Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*接続できません*') "unreachable server (exit $($cli.Code))"
-$cli = Invoke-Cli @('-Destination', 'ft-nonexistent-host.invalid', '-Folder', 'C:\Work\{date}', "$src\日本語ファイル.txt", '-WhatIf')
+$cli = Invoke-Cli @('-Destination', 'ft-nonexistent-host.invalid', '-Folder', 'C:\work\{date}', "$src\日本語ファイル.txt", '-WhatIf')
 Assert-True ($cli.Code -eq 2 -and $cli.Output -like '*robocopy*' -and $cli.Output -like '*接続できません*') "-WhatIf shows the plan and the connection problem (exit $($cli.Code))"
 if ($uncWorkDir) {
     $stagesBefore = @(Get-ChildItem -LiteralPath (Get-FtStageRoot) -Directory -Filter 'stage_*' -ErrorAction SilentlyContinue).Count

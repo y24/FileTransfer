@@ -10,7 +10,7 @@ function Get-FtBuiltinConfig {
         version = 1
         history = @{
             destinations  = @()
-            serverFolders = @('C:\Work\{date}')
+            serverFolders = @('C:\work\{date}')
             localFolders  = @("$downloads\Transfer\{date}")
             lastOpenDir   = ''
         }

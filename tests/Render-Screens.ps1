@@ -178,14 +178,31 @@ Assert-True ($ui.DetailLink.Visibility -eq 'Visible' -and $ui.LogonLink.Visibili
 Save-Screen $window '07-error'
 
 Write-Host '08 server needs logon (simulated status)'
-Set-Destination $env:COMPUTERNAME 'C:\Work\{datetime}'
+Set-Destination $env:COMPUTERNAME 'C:\work\{datetime}'
 $script:Checks[$thisHost].Status = 'auth'
 Update-FtView
 Assert-True ($ui.HintText.Text -like '*ログオンが必要です*') 'logon hint'
 Save-Screen $window '08-needs-logon'
 
+Write-Host '08b server unreachable (simulated status) offers the SMB script'
+$script:Checks[$thisHost].Status = 'unreachable'
+Update-FtView
+Assert-True ($ui.HintText.Text -eq "$thisHost に接続できません  有効化スクリプトをコピー") "unreachable hint offers the script ($($ui.HintText.Text))"
+Save-Screen $window '08b-unreachable'
+Copy-FtSmbScript
+$copied = @([System.Windows.Clipboard]::GetFileDropList())
+Assert-True ($copied.Count -eq 1 -and $copied[0] -eq (Join-Path $root 'tools\EnableSMB.bat')) "EnableSMB.bat is on the clipboard ($($copied -join ', '))"
+Assert-True ($ui.ResultText.Text -like '*コピーしました。RDP 先で貼り付けて実行してください*') "copy notice ($($ui.ResultText.Text))"
+Save-Screen $window '08c-script-copied'
+Set-FtResult $null
+$script:Checks[$thisHost].Status = 'noshare'
+Update-FtView
+Assert-True ($ui.HintText.Text -like '*管理共有が無効の可能性があります*有効化スクリプトをコピー') "noshare hint offers the script ($($ui.HintText.Text))"
+$script:Checks[$thisHost].Status = 'auth'
+Update-FtView
+
 Write-Host '09 invalid folder'
-$ui.FolderBox.Text = 'C:\Work\a?b'
+$ui.FolderBox.Text = 'C:\work\a?b'
 Update-FtFolder
 Assert-True (-not $ui.StartButton.IsEnabled) 'start disabled for invalid folder'
 Assert-True ($ui.FolderBox.Foreground -eq (Get-FtBrush 'ErrorBrush')) 'invalid folder text is red'
@@ -341,7 +358,7 @@ Write-Host "    (info) progress samples: $(($script:ProgressTexts | Select-Objec
 [IO.File]::Delete((Join-Path $WorkDir 'large\large-3gb.bin'))
 
 Write-Host '17 connected as another user: hint and disconnect'
-Set-Destination $env:COMPUTERNAME 'C:\Work\{datetime}'
+Set-Destination $env:COMPUTERNAME 'C:\work\{datetime}'
 $script:Checks[$thisHost].Status = 'conflict'
 Update-FtView
 Assert-True ($ui.HintText.Text -like '*別のユーザーで接続中です*切断して再試行*ログオン…*') "conflict hint offers disconnect and logon ($($ui.HintText.Text))"
@@ -353,7 +370,7 @@ Assert-True ((Get-FtCheck $thisHost).Status -eq 'ok') 'the server is checked aga
 
 Write-Host '18 transfer failed with error 1219'
 $fakeHost = @{
-    Name = $thisHost; HostName = $thisHost; IsLocal = $false; Dest = "\\$thisHost\C`$\Work\x"; Status = 'failed'; Elapsed = 1.0
+    Name = $thisHost; HostName = $thisHost; IsLocal = $false; Dest = "\\$thisHost\C`$\work\x"; Status = 'failed'; Elapsed = 1.0
     Result = @{ Status = 'failed'; Code = 1219; ExitCode = 16; Message = ''; Missing = @() }
     Sync = (New-FtSync); Bytes = 0L; Done = New-Object 'System.Collections.Generic.HashSet[string]'
 }
@@ -389,7 +406,7 @@ Write-Host '20 wider window, folder button'
 Remove-FtItems @($script:Items)
 Add-FtPaths @("$src\other\設定_20261015.zip", "$src\modules")
 Wait-Until { $script:PendingSizes -eq 0 } -What 'folder size'
-Set-Destination $env:COMPUTERNAME 'C:\Work\{datetime}'
+Set-Destination $env:COMPUTERNAME 'C:\work\{datetime}'
 $window.Width = 680
 Wait-Ui 200
 Assert-True ($window.ActualWidth -ge 670) "the window can be made wider ($($window.ActualWidth))"
@@ -449,7 +466,7 @@ Assert-True ($ui.HintText.Text -like '*WinRM*サーバー上のパス*' -and -no
 
 Write-Host '25 back to SMB'
 Set-FtMethod 'smb'
-Set-Destination $env:COMPUTERNAME 'C:\Work\{datetime}'
+Set-Destination $env:COMPUTERNAME 'C:\work\{datetime}'
 Assert-True ($ui.MethodBadge.Visibility -eq 'Collapsed' -and (Get-FtCheck $thisHost).Root -like '\\*') 'SMB again after switching back'
 $env:FILETRANSFER_TEST_WINRM_LOCAL = $null
 

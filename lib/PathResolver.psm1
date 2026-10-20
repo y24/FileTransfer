@@ -57,7 +57,7 @@ function Get-FtUncHost {
 }
 
 # 送り先とフォルダ欄の値から、実際にコピーする先のパスを求める
-# Method が winrm のときは、サーバーへは PowerShell リモートで送るので、サーバー上のパス（C:\Work\...）のまま返す
+# Method が winrm のときは、サーバーへは PowerShell リモートで送るので、サーバー上のパス（C:\work\...）のまま返す
 # 戻り値: @{ Path; Error; IsLocal; HostName; ShareRoot; Method }（Method は このPC なら local、それ以外は smb | winrm）
 function Resolve-FtDestination {
     param(
@@ -93,7 +93,7 @@ function Resolve-FtDestination {
     }
 
     if ($expanded -match '^\\\\[^\\]+\\[^\\]+') {
-        if ($winrm) { $result.Error = 'WinRM で送るときは、フォルダをサーバー上のパス（C:\Work など）で入力してください'; return $result }
+        if ($winrm) { $result.Error = 'WinRM で送るときは、フォルダをサーバー上のパス（C:\work など）で入力してください'; return $result }
         $result.Path = $expanded.TrimEnd('\')
         $result.ShareRoot = Get-FtShareRoot $result.Path
         if (-not $isLocal) { $result.HostName = (Get-FtUncHost $result.Path).ToUpperInvariant() }
@@ -101,7 +101,7 @@ function Resolve-FtDestination {
     }
 
     if ($expanded -notmatch '^(?<drive>[A-Za-z]):(?<rest>\\.*)?$') {
-        $result.Error = if ($isLocal) { 'D:\… または \\サーバー\共有\… の形式で入力してください' } else { 'サーバー上のパスを C:\Work のように入力してください' }
+        $result.Error = if ($isLocal) { 'D:\… または \\サーバー\共有\… の形式で入力してください' } else { 'サーバー上のパスを C:\work のように入力してください' }
         return $result
     }
     $drive = $Matches['drive'].ToUpperInvariant()
@@ -112,7 +112,7 @@ function Resolve-FtDestination {
         return $result
     }
 
-    # 設定ファイルの serverShareMappings（例: SV-LEGACY01 の C:\Work → \\SV-LEGACY01\Work$）
+    # 設定ファイルの serverShareMappings（例: SV-LEGACY01 の C:\work → \\SV-LEGACY01\Work$）
     $serverPath = "${drive}:$rest"
     foreach ($mapping in @($Mappings)) {
         if ($null -eq $mapping) { continue }
@@ -181,10 +181,10 @@ function Resolve-FtDestinations {
         $targets += $target
     }
     if ($targets.Count -gt 1) {
-        # WinRM ではパス（C:\Work\...）が全台で同じになるので、ホスト名と組みにして比べる
+        # WinRM ではパス（C:\work\...）が全台で同じになるので、ホスト名と組みにして比べる
         $paths = @($targets | ForEach-Object { "$($_.HostName)|$($_.Path)".ToLowerInvariant() } | Select-Object -Unique)
         if ($paths.Count -lt $targets.Count) {
-            $result.Error = '複数のサーバーに送るときは、フォルダを C:\Work のようなサーバー上のパスで指定してください'
+            $result.Error = '複数のサーバーに送るときは、フォルダを C:\work のようなサーバー上のパスで指定してください'
             return $result
         }
     }

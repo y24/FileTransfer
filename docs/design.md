@@ -14,7 +14,7 @@
 
 ```
 共有フォルダ(\\fs01\patches)  ──エクスプローラーでコピペ──▶  ローカルPC
-ローカルPC                    ──RDP 越しにコピペ──────────▶  Windows Server (C:\Work\...)
+ローカルPC                    ──RDP 越しにコピペ──────────▶  Windows Server (C:\work\...)
 ```
 
 ### 1.2 課題
@@ -44,8 +44,8 @@
 | F-01 | 送るファイルを複数選択し、まとめて転送できる（ファイル／フォルダの混在も可） | 必須 |
 | F-02 | 送るファイルは「ファイル選択ダイアログ」「ドラッグ＆ドロップ」「エクスプローラーでコピー → アプリに貼り付け（Ctrl+V）」で追加できる | 必須 |
 | F-03 | 送り先は「このPC」（ローカルのパス、または共有フォルダの UNC パス）か「サーバーのホスト名」で指定できる | 必須 |
-| F-04 | サーバーへ送るときは、サーバー上のパス（例: `C:\Work`）で送り先フォルダを指定できる | 必須 |
-| F-05 | 送り先フォルダ名に日付・時刻のテンプレート（例: `C:\Work\{datetime}` → `C:\Work\20261015_1432`）が使える | 必須 |
+| F-04 | サーバーへ送るときは、サーバー上のパス（例: `C:\work`）で送り先フォルダを指定できる | 必須 |
+| F-05 | 送り先フォルダ名に日付・時刻のテンプレート（例: `C:\work\{datetime}` → `C:\work\20261015_1432`）が使える | 必須 |
 | F-06 | ローカルアカウント／AD アカウントのどちらでもサーバーに認証できる。資格情報は保存して次回から入力不要にできる | 必須 |
 | F-07 | 転送の進捗（ファイルごと・全体）、速度、残り時間を表示し、中止できる | 必須 |
 | F-08 | 送り先とフォルダは履歴から選ぶだけで指定できる | 必須 |
@@ -111,8 +111,8 @@ flowchart LR
   end
   FS[("共有フォルダ<br>\\fs01\patches")]
   LD[("ローカルディスク<br>D:\Transfer")]
-  SV1["SV-APP01<br>C:\Work"]
-  SV2["SV-DB02<br>C:\Work"]
+  SV1["SV-APP01<br>C:\work"]
+  SV2["SV-DB02<br>C:\work"]
 
   FS <-->|"SMB<br>ログオン中の AD ユーザー"| ENG
   ENG <--> LD
@@ -162,12 +162,12 @@ flowchart LR
 
 | シナリオ | 送るファイル | 送り先 | フォルダ | 操作 |
 |----------|-------------|--------|---------|------|
-| A. パッチをサーバーへ配置（最頻） | `\\fs01\patches\2026-10\*.msu` | `SV-APP01` | `C:\Work\{datetime}` | ＋でファイルを選ぶ → 送り先を履歴から選ぶ → 転送開始 |
+| A. パッチをサーバーへ配置（最頻） | `\\fs01\patches\2026-10\*.msu` | `SV-APP01` | `C:\work\{datetime}` | ＋でファイルを選ぶ → 送り先を履歴から選ぶ → 転送開始 |
 | B. 共有からローカルへ取得 | `\\fs01\release\app\setup.exe` | `このPC` | `D:\Transfer\{date}` | 送り先を「このPC」にして転送開始 |
 | C. ローカルのファイルを共有へ | `C:\Users\...\Downloads\config.zip` | `このPC` | `\\fs01\work\yamada\{date}` | ドラッグ＆ドロップ → 転送開始 |
 | D. サーバーのログをローカルへ回収 | `\\SV-APP01\C$\Logs\app.log` | `このPC` | `D:\Transfer\{date}_SV-APP01` | ファイル選択ダイアログで `\\SV-APP01\C$\Logs` を開いて選ぶ → 転送開始 |
-| E. 同じパッチを複数台へ配る | `\\fs01\patches\2026-10\*.msu` | `SV-APP01, SV-APP02, SV-APP03` | `C:\Work\{datetime}` | 送り先にホスト名をカンマ区切りで書く（2 回目からは履歴から選ぶ）→ 転送開始 |
-| F. バッチ・タスクから配る | 同上 | 同上 | 同上 | `FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\Work\{datetime} \\fs01\patches\2026-10\*.msu`（7.9） |
+| E. 同じパッチを複数台へ配る | `\\fs01\patches\2026-10\*.msu` | `SV-APP01, SV-APP02, SV-APP03` | `C:\work\{datetime}` | 送り先にホスト名をカンマ区切りで書く（2 回目からは履歴から選ぶ）→ 転送開始 |
+| F. バッチ・タスクから配る | 同上 | 同上 | 同上 | `FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\work\{datetime} \\fs01\patches\2026-10\*.msu`（7.9） |
 
 送るファイルは「パス（ローカルパスまたは UNC パス）のリスト」として扱うため、どこにあるファイルでも同じ操作で送れます。送り先は「このPC」か「サーバーのホスト名（複数可）」の 2 種類だけで、共有フォルダは「このPC から見えるパス（`\\fs01\...`）」として扱います。
 
@@ -195,8 +195,8 @@ flowchart LR
 │ └────────────────────────────────────┘ │
 │ 送り先                          (WinRM) ⚙ │ ← (WinRM) は WinRM で送るときだけ
 │ [● SV-APP01                          ▾] │
-│ [C:\Work\{datetime}                  ▾] │
-│ → \\SV-APP01\C$\Work\20261015_1432       │ ← 状態の行
+│ [C:\work\{datetime}                  ▾] │
+│ → \\SV-APP01\C$\work\20261015_1432       │ ← 状態の行
 │                                          │
 │ [              転送開始              ]   │
 └──────────────────────────────────────────┘
@@ -221,8 +221,8 @@ flowchart LR
 
 ```
 │ [● SV-APP01, SV-APP02, SV-APP03     ▾] │
-│ [C:\Work\{datetime}                  ▾] │
-│ → \\SV-APP01\C$\Work\20261015_1432  ほか 2 台 │   ← マウスを乗せると全台のパス
+│ [C:\work\{datetime}                  ▾] │
+│ → \\SV-APP01\C$\work\20261015_1432  ほか 2 台 │   ← マウスを乗せると全台のパス
 ...
 │ 45%・1/3 台完了・98.2 MB/s・残り 6 秒 [中止] │   ← 転送中
 │ ✓ 3 件を 3 台に転送しました（362.7 MB・12.3 秒） 開く RDP │   ← 完了（開く・RDP は台を選ぶメニュー）
@@ -333,8 +333,8 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
-  A["転送開始"] --> B["フォルダ欄のテンプレートを展開<br>例: C:\Work\{datetime} → C:\Work\20261015_1432<br>（全台で同じ日時）"]
-  B --> C["送り先ごとにパスを解決<br>C:\Work\... → \\HOST\C$\Work\..."]
+  A["転送開始"] --> B["フォルダ欄のテンプレートを展開<br>例: C:\work\{datetime} → C:\work\20261015_1432<br>（全台で同じ日時）"]
+  B --> C["送り先ごとにパスを解決<br>C:\work\... → \\HOST\C$\work\..."]
   C --> D{"すべてのサーバーに<br>接続できるか"}
   D -->|ログオンが必要| E["ログオンダイアログ（1 台ずつ）"] --> D
   D -->|接続不可| X["エラー表示"]
@@ -365,31 +365,31 @@ flowchart TD
   - **貼り付け（Ctrl+V）**: エクスプローラーで Ctrl+C したファイル・フォルダを `Clipboard.GetFileDropList()` で取得。今の「コピペ」の習慣をそのまま使える。
 - 同じパスの重複追加は無視する。異なる場所にある同名ファイルは、送り先で衝突するため追加時に警告して追加しない。
 - 一覧には名前とサイズだけを表示し、元のフルパスはツールチップで表示する。
-- フォルダは、どの方法で追加しても同じ扱いになる。中のファイルをサブフォルダごと（空のフォルダも含めて）、フォルダの構成のまま、送り先に「フォルダ名」のフォルダとして送る（例: `C:\Build\app` → `C:\Work\20261015_1432\app\...`）。ジャンクション・シンボリックリンクのフォルダは辿らない。SMB では robocopy の `/E /XJ`（7.4）、WinRM ではフォルダを辿って 1 つずつ送る（7.11）。
+- フォルダは、どの方法で追加しても同じ扱いになる。中のファイルをサブフォルダごと（空のフォルダも含めて）、フォルダの構成のまま、送り先に「フォルダ名」のフォルダとして送る（例: `C:\Build\app` → `C:\work\20261015_1432\app\...`）。ジャンクション・シンボリックリンクのフォルダは辿らない。SMB では robocopy の `/E /XJ`（7.4）、WinRM ではフォルダを辿って 1 つずつ送る（7.11）。
 
 ### 7.2 送り先の指定とパス解決
 
 | 送り先 | フォルダ欄 | 解決後のパス |
 |--------|-----------|-------------|
-| `SV-APP01` | `C:\Work\{datetime}` | `\\SV-APP01\C$\Work\20261015_1432` |
-| `SV-LEGACY01`（設定で `C:\Work` ⇔ `\\SV-LEGACY01\Work$` を定義） | `C:\Work\{datetime}` | `\\SV-LEGACY01\Work$\20261015_1432` |
+| `SV-APP01` | `C:\work\{datetime}` | `\\SV-APP01\C$\work\20261015_1432` |
+| `SV-LEGACY01`（設定で `C:\work` ⇔ `\\SV-LEGACY01\Work$` を定義） | `C:\work\{datetime}` | `\\SV-LEGACY01\Work$\20261015_1432` |
 | `このPC` | `D:\Transfer\{date}` | `D:\Transfer\20261015` |
 | `このPC` | `\\fs01\work\yamada\{date}` | `\\fs01\work\yamada\20261015` |
-| `SV-APP01, SV-APP02` | `C:\Work\{datetime}` | `\\SV-APP01\C$\Work\20261015_1432` と `\\SV-APP02\C$\Work\20261015_1432` |
+| `SV-APP01, SV-APP02` | `C:\work\{datetime}` | `\\SV-APP01\C$\work\20261015_1432` と `\\SV-APP02\C$\work\20261015_1432` |
 | `SV-APP01, SV-APP02` | `\\{host}\Deploy$\{date}` | `\\SV-APP01\Deploy$\20261015` と `\\SV-APP02\Deploy$\20261015` |
 
 - 送り先欄はカンマ・セミコロン・読点・空白で区切って、ホスト名を複数書ける。大文字小文字を区別せず重複を除く。
 - 「このPC」とサーバーは一緒に指定できない（フォルダ欄の意味が違うため）。
 - 複数台のとき、送り先のパスが全台で同じになる指定（`\\fs01\work\x` など）はエラーにする（同じ場所に何度も送ることになるため）。`{host}` を含む UNC なら台ごとに別のパスになるので使える。
 - 送り先が「このPC」以外なら、サーバーのホスト名とみなす。フォルダ欄は「サーバー上のパス」で書き（RDP でサーバーを触るときと同じ感覚）、`X:\path` を `\\HOST\X$\path` に変換する。UNC を直接書いた場合はそのまま使う。
-- 送り先を「このPC」とサーバーで切り替えると、フォルダ欄はそれぞれで前回使った値に戻る（サーバー用の `C:\Work\...` がローカルに使われる、といった取り違えを防ぐ）。
+- 送り先を「このPC」とサーバーで切り替えると、フォルダ欄はそれぞれで前回使った値に戻る（サーバー用の `C:\work\...` がローカルに使われる、といった取り違えを防ぐ）。
 - 管理共有（`C$`）が使えないサーバー向けに、設定ファイルで「サーバーパス ⇔ 共有」のマッピングを定義できる（11.1 の対策 B）。
 - 送り先フォルダが存在しなければ robocopy が自動作成する。
 - 既に存在するフォルダに送る場合はそのまま追加する。同名ファイルは robocopy の既定動作（内容が同じならスキップ、異なれば上書き）に従う。
 
 ### 7.3 フォルダ名テンプレート
 
-フォルダ欄に直接書きます（例: `C:\Work\{datetime}`）。
+フォルダ欄に直接書きます（例: `C:\work\{datetime}`）。
 
 | テンプレート | 展開例（2026-10-15 14:32:10 開始） | 備考 |
 |-------------|-------------------------------------|------|
@@ -400,8 +400,8 @@ flowchart TD
 | `{user}` | `yamada` | Windows のログオンユーザー名 |
 | `{host}` | `SV-APP01` | 送り先ホスト名（サーバー時。複数台のときは台ごとに展開） |
 
-- 固定文字列と組み合わせ可能（例: `C:\Work\{date}_KB5031234` → `C:\Work\20261015_KB5031234`）。
-- 階層の途中にも書ける（例: `C:\Work\{date}\patch`）。
+- 固定文字列と組み合わせ可能（例: `C:\work\{date}_KB5031234` → `C:\work\20261015_KB5031234`）。
+- 階層の途中にも書ける（例: `C:\work\{date}\patch`）。
 - 日時は **転送開始時刻** で確定する（状態の行は現在時刻で表示）。複数台に送るときも全台で同じ日時になる。
 - ファイル名に使えない文字（`: * ? " < > |`）が含まれる場合は、フォルダ欄の文字を赤くし、状態の行に理由を出して転送開始を押せなくする（`/` は `\` として扱う）。
 - 送り先が「このPC」のときは、`%USERPROFILE%` などの環境変数も展開する（サーバーのパスでは展開しない）。
@@ -414,10 +414,10 @@ robocopy は「1 つのコピー元フォルダ → 1 つのコピー先フォ�
 
 ```powershell
 # ファイル（同じ親フォルダのものをまとめて 1 回で）
-robocopy '\\fs01\patches\2026-10' '\\SV-APP01\C$\Work\20261015_1432' 'KB5031234-x64.msu' 'KB5031235-x64.msu' <共通オプション>
+robocopy '\\fs01\patches\2026-10' '\\SV-APP01\C$\work\20261015_1432' 'KB5031234-x64.msu' 'KB5031235-x64.msu' <共通オプション>
 
 # フォルダ（フォルダ名を送り先に付けて /E）
-robocopy 'C:\Build\app' '\\SV-APP01\C$\Work\20261015_1432\app' /E /MT:8 <共通オプション>
+robocopy 'C:\Build\app' '\\SV-APP01\C$\work\20261015_1432\app' /E /MT:8 <共通オプション>
 ```
 
 - ファイル名の引数が多くコマンドラインの長さ上限に近づく場合は、複数回に分割する。
@@ -472,9 +472,12 @@ robocopy は、存在しないファイル名を指定されてもエラーに�
 
 | 結果 | ● | 状態の行 |
 |------|---|---------|
-| アクセス可 | 緑（ツールチップに接続ユーザー名） | `→ \\SV-APP01\C$\Work\20261015_1432` |
+| アクセス可 | 緑（ツールチップに接続ユーザー名） | `→ \\SV-APP01\C$\work\20261015_1432` |
 | アクセス拒否・ログオン失敗 | 黄 | `SV-DB02 へのログオンが必要です［ログオン…］` |
-| 445/TCP に到達不可 | 赤 | `SV-TEST99 に接続できません（ホスト名を確認してください）` |
+| 445/TCP に到達不可 | 赤 | `SV-TEST99 に接続できません［有効化スクリプトをコピー］` |
+| 管理共有が見つからない | 赤 | `\\SV-TEST99\C$ が見つかりません（管理共有が無効の可能性があります）［有効化スクリプトをコピー］` |
+
+［有効化スクリプトをコピー］は SMB のときだけ出す。`tools\EnableSMB.bat` をファイルとしてクリップボードに置き（`Clipboard.SetFileDropList`）、「コピーしました。RDP 先で貼り付けて実行してください」と知らせる。サーバーに RDP で接続して Ctrl+V で貼り付け、ダブルクリックすると、管理者に昇格して Server サービス・管理共有・SMB2/3・ファイアウォール（ファイルとプリンターの共有）・LocalAccountTokenFilterPolicy を有効にする（元の値は `HKLM\SOFTWARE\FileTransfer\EnableSMB` に記録し、`tools\DisableSMB.bat` で戻せる）。
 
 #### 資格情報の使い方
 
@@ -550,7 +553,7 @@ flowchart LR
 `FileTransfer.ps1`（または `FileTransfer.bat`）に引数を付けると、画面を出さずに転送する。バッチファイルやタスク スケジューラから呼べる。
 
 ```bat
-FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\Work\{datetime} \\fs01\patches\2026-10\*.msu
+FileTransfer.bat -Destination SV-APP01,SV-APP02 -Folder C:\work\{datetime} \\fs01\patches\2026-10\*.msu
 FileTransfer.bat -Destination このPC -Folder D:\Transfer\{date} \\fs01\release\app\setup.exe
 ```
 
@@ -624,12 +627,12 @@ flowchart LR
   FS[("共有<br>\\fs01\patches")] -->|"SMB で読む"| W
   LD[("この PC のファイル")] --> W
   W -->|"PowerShell リモート（5985/TCP）<br>2 MB ずつ送る"| AG["サーバー側の処理<br>（接続ごとに送る小さなスクリプト）"]
-  AG --> SV[("C:\Work\20261015_1432")]
+  AG --> SV[("C:\work\20261015_1432")]
 ```
 
 | 項目 | 内容 |
 |------|------|
-| 送り先のパス | フォルダ欄のサーバー上のパス（`C:\Work\{datetime}`）をそのまま使う（`\\HOST\C$` には変換しない）。UNC（`\\…`）は「WinRM で送るときは、フォルダをサーバー上のパス（C:\Work など）で入力してください」としてエラーにする。`serverShareMappings` と別名（7.5）は使わない。複数台のとき、全台が同じパスになってよい |
+| 送り先のパス | フォルダ欄のサーバー上のパス（`C:\work\{datetime}`）をそのまま使う（`\\HOST\C$` には変換しない）。UNC（`\\…`）は「WinRM で送るときは、フォルダをサーバー上のパス（C:\work など）で入力してください」としてエラーにする。`serverShareMappings` と別名（7.5）は使わない。複数台のとき、全台が同じパスになってよい |
 | 接続 | `New-PSSession`（`winrm.useSsl` / `winrm.port` を反映）。接続できたら、サーバー側で動かす小さなスクリプト（受け取ったデータをファイルに書く・フォルダを作る・空き容量を返す など）を 1 回送っておき、以後はコマンド名と引数だけを送って呼ぶ。サーバー側のスクリプトは PowerShell 3.0 の書き方だけを使う（Windows Server 2012 R2 の 4.0 でも動く）。サーバーにソフトは入れない |
 | 送り方 | 大きいファイルは 2 MB（`winrm.chunkSizeMB`）ずつ読んでは送る（open → write × n → close）。2 MB 以下のファイルは、まとめて 1 回で送る（最大 200 個・2 MB まで。小さいファイルが多いフォルダで往復を減らすため）。`Copy-Item -ToSession` は進捗と中止を細かく扱えないので使わない |
 | フォルダ | この PC 側でフォルダを辿り（ジャンクションは辿らない）、送り先にフォルダの構成のまま作る。空のフォルダも作る。読めないサブフォルダがあれば、残りを送ってから失敗として知らせる（robocopy と同じ） |
@@ -676,18 +679,18 @@ flowchart LR
   "version": 1,
   "history": {
     "destinations": ["SV-APP01", "SV-WEB01", "SV-DB02"],
-    "serverFolders": ["C:\\Work\\{datetime}", "C:\\Work\\{date}", "D:\\Deploy\\{datetime}"],
+    "serverFolders": ["C:\\work\\{datetime}", "C:\\work\\{date}", "D:\\Deploy\\{datetime}"],
     "localFolders": ["D:\\Transfer\\{datetime}", "\\\\fs01\\work\\yamada\\{date}"],
     "lastOpenDir": "\\\\fs01\\patches\\2026-10"
   },
   "last": {
     "destination": "SV-APP01",
-    "folder": "C:\\Work\\{date}",
+    "folder": "C:\\work\\{date}",
     "items": ["\\\\fs01\\patches\\2026-10\\KB5031234.msu"]
   },
   "window": { "left": 200, "top": 160, "width": 400, "height": 460 },
   "serverShareMappings": [
-    { "host": "SV-LEGACY01", "serverPath": "C:\\Work", "share": "\\\\SV-LEGACY01\\Work$" }
+    { "host": "SV-LEGACY01", "serverPath": "C:\\work", "share": "\\\\SV-LEGACY01\\Work$" }
   ],
   "transfer": {
     "method": "smb",
@@ -836,7 +839,7 @@ sequenceDiagram
 3 行目に該当するサーバーがある場合の対策:
 
 - **対策 A**: サーバーのレジストリ `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\LocalAccountTokenFilterPolicy` を `1`（DWORD）にする。ローカル管理者のリモート権限制限を解除するため、**セキュリティ担当の承認が必要**。
-- **対策 B（推奨）**: サーバー側に転送用の共有を作る（例: `C:\Work` を `Work$` として共有し、該当ローカルユーザーに共有・NTFS の変更権限を付与）。設定ファイルの `serverShareMappings` に登録すれば、ユーザーは今までどおり `C:\Work` と入力するだけで使える。
+- **対策 B（推奨）**: サーバー側に転送用の共有を作る（例: `C:\work` を `Work$` として共有し、該当ローカルユーザーに共有・NTFS の変更権限を付与）。設定ファイルの `serverShareMappings` に登録すれば、ユーザーは今までどおり `C:\work` と入力するだけで使える。
 - **対策 C**: SMB がそもそも使えない（ファイル共有が無効、445/TCP が閉じている）サーバーは、設定画面で転送方法を WinRM に切り替える（7.11）。
 
 **WinRM で送る場合の前提**
@@ -861,21 +864,21 @@ Test-NetConnection SV-APP01 -Port 445
 cmdkey /add:SV-APP01 /user:SV-APP01\Administrator /pass
 
 # 3. 管理共有にアクセスできるか（$ を含むパスはシングルクォートで囲む）
-Test-Path '\\SV-APP01\C$\Work'
+Test-Path '\\SV-APP01\C$\work'
 
 # 4. 共有 → サーバー（中継）の速度を測定
 Measure-Command {
-  robocopy '\\fs01\patches\2026-10' '\\SV-APP01\C$\Work\speedtest' 'KB5031234-x64.msu' /J /R:1 /W:1
+  robocopy '\\fs01\patches\2026-10' '\\SV-APP01\C$\work\speedtest' 'KB5031234-x64.msu' /J /R:1 /W:1
 }
 
 # 5. 比較用: 共有 → ローカル → サーバー（2 段階）
 Measure-Command {
   robocopy '\\fs01\patches\2026-10' 'D:\Transfer\speedtest' 'KB5031234-x64.msu' /J /R:1 /W:1
-  robocopy 'D:\Transfer\speedtest' '\\SV-APP01\C$\Work\speedtest2' 'KB5031234-x64.msu' /J /R:1 /W:1
+  robocopy 'D:\Transfer\speedtest' '\\SV-APP01\C$\work\speedtest2' 'KB5031234-x64.msu' /J /R:1 /W:1
 }
 
 # 後片付け（検証用フォルダと資格情報の削除）
-Remove-Item '\\SV-APP01\C$\Work\speedtest', '\\SV-APP01\C$\Work\speedtest2', 'D:\Transfer\speedtest' -Recurse
+Remove-Item '\\SV-APP01\C$\work\speedtest', '\\SV-APP01\C$\work\speedtest2', 'D:\Transfer\speedtest' -Recurse
 cmdkey /delete:SV-APP01
 ```
 
@@ -917,7 +920,7 @@ v1.1 で「複数サーバーへの一括配布」（7.8）と「コマンドラ
 
 | 優先度 | 機能 | 概要 |
 |--------|------|------|
-| 中 | 転送プリセット | 「パッチ配布（SV-APP01〜03 の C:\Work\{date}）」のような組み合わせに名前を付けて保存。複数台の組み合わせは送り先の履歴に 1 件として残るので、当面はそれで代用できる |
+| 中 | 転送プリセット | 「パッチ配布（SV-APP01〜03 の C:\work\{date}）」のような組み合わせに名前を付けて保存。複数台の組み合わせは送り先の履歴に 1 件として残るので、当面はそれで代用できる |
 | 中 | ハッシュ検証 | 転送後に SHA-256 を比較（送り先から読み直すため時間は増える） |
 | 中 | サーバーごとの転送方法 | 今の転送方法（SMB / WinRM）は全サーバー共通。SMB と WinRM のサーバーが混在するなら、サーバーごとに覚える、または SMB で接続できないときに WinRM を自動で試す |
 | 低 | 自動更新チェック | 起動時に共有フォルダ上の新しいバージョンを検知して案内 |

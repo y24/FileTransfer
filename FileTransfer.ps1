@@ -13,7 +13,7 @@
     （コマンドライン）送り先。ホスト名（カンマ区切りで複数可）または このPC
 
 .PARAMETER Folder
-    （コマンドライン）送り先のフォルダ。サーバーなら C:\Work\{datetime} のようにサーバー上のパスで書く
+    （コマンドライン）送り先のフォルダ。サーバーなら C:\work\{datetime} のようにサーバー上のパスで書く
 
 .PARAMETER Source
     （コマンドライン）送るファイル・フォルダ。* ? も使える。-Source を書かずに末尾に並べてもよい
@@ -40,7 +40,7 @@
     画面を表示せずに初期化だけ行う（tests\ から読み込むため）
 
 .EXAMPLE
-    FileTransfer.ps1 -Destination SV-APP01,SV-APP02 -Folder 'C:\Work\{datetime}' \\fs01\patches\2026-10\*.msu
+    FileTransfer.ps1 -Destination SV-APP01,SV-APP02 -Folder 'C:\work\{datetime}' \\fs01\patches\2026-10\*.msu
 
 .EXAMPLE
     FileTransfer.ps1 -Destination このPC -Folder 'D:\Transfer\{date}' \\fs01\release\app\setup.exe -WhatIf
@@ -556,7 +556,7 @@ function Test-FtCanStart {
 }
 
 function Set-FtHint {
-    param([string]$Kind, [string]$Text, [switch]$WithLogon, [string[]]$DisconnectHosts = @(), [int]$More = 0, [string]$ToolTip = '', [string]$Note = '')
+    param([string]$Kind, [string]$Text, [switch]$WithLogon, [switch]$WithSmbScript, [string[]]$DisconnectHosts = @(), [int]$More = 0, [string]$ToolTip = '', [string]$Note = '')
     $hint = $ui.HintText
     $hint.Inlines.Clear()
     $hint.ToolTip = $null
@@ -591,6 +591,37 @@ function Set-FtHint {
         $link.Add_Click({ Request-FtLogon })
         $hint.Inlines.Add($link)
     }
+    if ($WithSmbScript) {
+        $hint.Inlines.Add((New-Object System.Windows.Documents.Run '  '))
+        $link = New-Object System.Windows.Documents.Hyperlink (New-Object System.Windows.Documents.Run '有効化スクリプトをコピー')
+        $link.Foreground = Get-FtBrush 'AccentBrush'
+        $link.ToolTip = "サーバーで SMB（ファイル共有）を有効にするスクリプト（EnableSMB.bat）をクリップボードにコピーします。`nサーバーに RDP で接続してデスクトップなどに Ctrl+V で貼り付け、ダブルクリックで実行してください（管理者権限で実行されます）"
+        $link.Add_Click({ Copy-FtSmbScript })
+        $hint.Inlines.Add($link)
+    }
+}
+
+# ［有効化スクリプトをコピー］: tools\EnableSMB.bat をファイルとしてクリップボードに置く（RDP 先で Ctrl+V で貼り付けられる）
+function Copy-FtSmbScript {
+    $path = Join-Path $script:AppRoot 'tools\EnableSMB.bat'
+    if (-not (Test-Path -LiteralPath $path)) {
+        Show-FtNotice "スクリプトが見つかりません：$path" 'error'
+        return
+    }
+    $files = New-Object System.Collections.Specialized.StringCollection
+    [void]$files.Add($path)
+    # ほかのアプリがクリップボードを開いていると失敗することがあるので、少し待って何回か試す
+    for ($i = 0; $i -lt 5; $i++) {
+        try {
+            [System.Windows.Clipboard]::SetFileDropList($files)
+            Write-FtLog "クリップボードにコピーしました: $path"
+            Show-FtNotice 'コピーしました。RDP 先で貼り付けて実行してください' 'ok'
+            return
+        } catch {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    Show-FtNotice 'クリップボードにコピーできませんでした。もう一度お試しください' 'error'
 }
 
 function Update-FtHint {
@@ -604,14 +635,18 @@ function Update-FtHint {
         if ($groups.checking.Count) { Set-FtHint 'muted' '接続を確認しています…'; return }
         if ($groups.unreachable.Count) {
             $port = Get-FtWinRmPort (Get-FtWinRmOptions $script:Config)
-            $why = if ($winrm) { "ホスト名と、サーバーで WinRM（$port 番ポート）が有効か確認してください" } else { 'ホスト名を確認してください' }
-            Set-FtHint 'error' "$(Join-FtHostNames $groups.unreachable) に接続できません（$why）" -ToolTip $statusLines
+            if ($winrm) {
+                Set-FtHint 'error' "$(Join-FtHostNames $groups.unreachable) に接続できません（ホスト名と、サーバーで WinRM（$port 番ポート）が有効か確認してください）" -ToolTip $statusLines
+            } else {
+                # ホスト名が正しければ、サーバーで SMB が有効になっていないことが多いので、有効化スクリプトを渡せるようにする
+                Set-FtHint 'error' "$(Join-FtHostNames $groups.unreachable) に接続できません" -WithSmbScript -ToolTip $statusLines
+            }
             return
         }
         if ($groups.noshare.Count) {
             $first = $groups.noshare[0]
             $text = if ($Targets.Count -eq 1) { "$((Get-FtCheck $first).Root) が見つかりません（管理共有が無効の可能性があります）" } else { "$(Join-FtHostNames $groups.noshare) の共有が見つかりません（管理共有が無効の可能性があります）" }
-            Set-FtHint 'error' $text -ToolTip $statusLines
+            Set-FtHint 'error' $text -WithSmbScript -ToolTip $statusLines
             return
         }
         $needLogon = @($groups.auth) + @($groups.conflict)

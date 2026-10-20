@@ -227,7 +227,7 @@
               <ul class="menu" hidden></ul>
             </div>
             <div class="combo" id="folderCombo">
-              <input id="folder" class="mono" value="C:\Work\{datetime}" placeholder="例: C:\Work\{datetime}" autocomplete="off" spellcheck="false" aria-label="フォルダ">
+              <input id="folder" class="mono" value="C:\work\{datetime}" placeholder="例: C:\work\{datetime}" autocomplete="off" spellcheck="false" aria-label="フォルダ">
               <button class="chev" type="button" tabindex="-1" aria-label="履歴を表示"><span data-icon="chevron"></span></button>
               <ul class="menu" hidden></ul>
             </div>
@@ -305,7 +305,7 @@
 
       <h2>考え方</h2>
       <ul>
-        <li>サーバーへ送るときは、フォルダ欄に <code>C:\Work</code> のようなサーバー上のパスを書くだけ（自動で <code>\\HOST\C$\Work</code> に変換）</li>
+        <li>サーバーへ送るときは、フォルダ欄に <code>C:\work</code> のようなサーバー上のパスを書くだけ（自動で <code>\\HOST\C$\work</code> に変換）</li>
         <li>共有フォルダへ送るときは、送り先を「このPC」にして <code>\\fs01\...</code> を書く（種類の切り替えは不要）</li>
         <li><code>{datetime}</code> などはフォルダ欄にそのまま書きます。下の 1 行に、実際に送られる先のパスが出ます</li>
         <li>接続状態やエラーも、送り先の下の 1 行と、ボタンの上の 1 行で表示します</li>
@@ -362,7 +362,7 @@
   const USER = 'yamada';
   const DEST_OPTIONS = [LOCAL, 'SV-APP01', 'SV-WEB01', 'SV-DB02'];
   const FOLDER_OPTIONS = {
-    server: [W('C:/Work/{datetime}'), W('C:/Work/{date}'), W('D:/Deploy/{datetime}')],
+    server: [W('C:/work/{datetime}'), W('C:/work/{date}'), W('D:/Deploy/{datetime}')],
     local: [W('D:/Transfer/{datetime}'), W('//fs01/work/yamada/{date}'), W('C:/Users/yamada/Downloads')],
   };
   const PICK_DIR = W('//fs01/patches/2026-10');
@@ -385,7 +385,7 @@
   const SPEED = { relay: 86, toServer: 104, toLocal: 112, toShare: 96, folder: 58 };  // MB/s（模擬）
 
   const state = { files: [], sel: new Set(), status: 'empty', user: '', phase: 'idle', run: null };
-  const lastFolder = { server: W('C:/Work/{datetime}'), local: W('D:/Transfer/{datetime}') };
+  const lastFolder = { server: W('C:/work/{datetime}'), local: W('D:/Transfer/{datetime}') };
   let destKind = 'server';
   let timer = null, checkTimer = null, toastTimer = null, pendingStart = false;
   const logLines = [];
@@ -409,7 +409,7 @@
     if (/[/:*?"<>|]/.test(raw.replace(/^[A-Za-z]:/, ''))) return { err: 'フォルダ名に使えない文字があります（/ : * ? " < > |）' };
     if (/^\\\\[^\\]+\\[^\\]+/.test(raw)) return { path: raw };
     const m = /^([A-Za-z]):(\\.*)?$/.exec(raw);
-    if (!m) return { err: isLocal() ? 'D:\\… または \\\\サーバー\\共有\\… の形式で入力してください' : 'サーバー上のパスを C:\\Work のように入力してください' };
+    if (!m) return { err: isLocal() ? 'D:\\… または \\\\サーバー\\共有\\… の形式で入力してください' : 'サーバー上のパスを C:\\work のように入力してください' };
     if (isLocal()) return { path: m[1].toUpperCase() + ':' + (m[2] || '\\') };
     return { path: '\\\\' + hostKey() + '\\' + m[1].toUpperCase() + '$' + (m[2] || '') };
   }
@@ -868,7 +868,7 @@
     logLines.length = 0;
     setLocked(false);
     destKind = 'server';
-    lastFolder.server = W('C:/Work/{datetime}');
+    lastFolder.server = W('C:/work/{datetime}');
     lastFolder.local = W('D:/Transfer/{datetime}');
     $('#dest').value = 'SV-APP01';
     $('#folder').value = lastFolder.server;
