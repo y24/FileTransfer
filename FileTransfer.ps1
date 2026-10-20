@@ -104,7 +104,7 @@ function Import-FtTypes {
 }
 
 Import-FtTypes
-$script:ModulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'WinRm', 'Distribution', 'Log', 'Cli') |
+$script:ModulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'WinRm', 'Distribution', 'Log', 'Cli', 'Update') |
     ForEach-Object { Join-Path $script:AppRoot "lib\$_.psm1" }
 foreach ($modulePath in $script:ModulePaths) { Import-Module $modulePath -Force -DisableNameChecking }
 
@@ -1623,9 +1623,27 @@ function Initialize-FtWindow {
     }
 }
 
+# コピー元（install.bat を実行したフォルダ）が更新されていたら、更新するか尋ねる
+# コピー元が共有フォルダで応答しないこともあるので、裏で調べて 15 秒で諦める
+function Request-FtUpdateCheck {
+    Start-FtJob -Script 'param($AppRoot) Test-FtUpdate -AppRoot $AppRoot' -Parameters @{ AppRoot = $script:AppRoot } -TimeoutMs 15000 -OnComplete {
+        param($value, $err, $context)
+        if ($err) { Write-FtLog "更新の確認に失敗しました: $($err.Message)"; return }
+        if (-not $value -or $script:Phase -eq 'running') { return }
+        $message = "新しいバージョンの FileTransfer があるため、更新を行います。`n［OK］を押すと自動で再起動します。`n`nSource: $($value.Source)"
+        [void][System.Windows.MessageBox]::Show($window, $message, 'FileTransfer', 'OK', 'Information')
+        if ($script:Phase -eq 'running') { return }
+        Write-FtLog "更新します: $($value.Source)"
+        $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -WaitProcessId {1} -Restart' -f $value.Installer, $PID
+        Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $arguments -WindowStyle Hidden
+        $window.Close()
+    }
+}
+
 Initialize-FtWindow
 
 if (-not $NoShow) {
+    Request-FtUpdateCheck
     [void]$window.ShowDialog()
     # 応答のない接続が裏で残っていると、PowerShell が終わらないことがあるので、待たずに終了する
     if (@($script:Jobs | Where-Object { -not $_.Handle.IsCompleted }).Count -gt 0) { [System.Environment]::Exit(0) }

@@ -18,7 +18,7 @@ New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
 if (-not ('FileTransfer.Native' -as [type])) {
     Add-Type -Path (Join-Path $root 'lib\Native.cs'), (Join-Path $root 'lib\Models.cs')
 }
-$modulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'WinRm', 'Distribution', 'Log', 'Cli') | ForEach-Object { Join-Path $root "lib\$_.psm1" }
+$modulePaths = @('Config', 'PathResolver', 'Connection', 'TransferEngine', 'WinRm', 'Distribution', 'Log', 'Cli', 'Update') | ForEach-Object { Join-Path $root "lib\$_.psm1" }
 foreach ($modulePath in $modulePaths) { Import-Module $modulePath -Force -DisableNameChecking }
 # 自分自身の管理共有（\\127.0.0.1\C$）経由で読めるときは、UNC のコピー元として使う
 $uncWorkDir = if ($WorkDir -match '^[Cc]:\\' -and [FileTransfer.Native]::GetPathError('\\127.0.0.1\C$\') -eq 0) { '\\127.0.0.1\C$' + $WorkDir.Substring(2) } else { $null }
@@ -154,6 +154,30 @@ Assert-True (-not $winrmOptions.UseSsl -and $winrmOptions.Port -eq 0 -and $winrm
 Assert-Equal 4MB (Get-FtWinRmOptions @{ winrm = @{ chunkSizeMB = 16 } }).ChunkBytes 'WinRM chunk size is capped (the server receives at most 10 MB per object)'
 Assert-Equal 5985 (Get-FtWinRmPort $winrmOptions) 'WinRM HTTP port'
 Assert-Equal 5986 (Get-FtWinRmPort @{ UseSsl = $true }) 'WinRM HTTPS port'
+
+Section 'Update check'
+$updSource = Join-Path $WorkDir 'update\source'
+$updApp = Join-Path $WorkDir 'update\app'
+New-Item -ItemType Directory -Path $updSource, $updApp -Force | Out-Null
+$contents = Get-FtAppContents
+foreach ($folder in $contents.Folders) { Copy-Item -LiteralPath (Join-Path $root $folder) -Destination (Join-Path $updSource $folder) -Recurse }
+foreach ($file in $contents.Files) { Copy-Item -LiteralPath (Join-Path $root $file) -Destination $updSource }
+Assert-Equal (Get-FtSourceHash -Root $root) (Get-FtSourceHash -Root $updSource) 'hash depends only on the contents, not the folder'
+Assert-True ($null -eq (Test-FtUpdate -AppRoot $updApp)) 'no install.json (started from the source folder): no update'
+Save-FtInstallInfo -Destination $updApp -Source $updSource -Hash (Get-FtSourceHash -Root $updSource)
+Assert-Equal $updSource (Get-FtInstallInfo -AppRoot $updApp).source 'install.json keeps the source folder'
+Assert-True ($null -eq (Test-FtUpdate -AppRoot $updApp)) 'unchanged source: no update'
+Add-Content -LiteralPath (Join-Path $updSource 'lib\Log.psm1') -Value '# changed'
+$update = Test-FtUpdate -AppRoot $updApp
+Assert-True ($update -and $update.Installer -eq (Join-Path $updSource 'tools\Install.ps1')) 'changed file: update with the installer of the source'
+Save-FtInstallInfo -Destination $updApp -Source $updSource -Hash (Get-FtSourceHash -Root $updSource)
+Set-Content -LiteralPath (Join-Path $updSource 'ui\New.xaml') -Value '<x/>'
+Assert-True ($null -ne (Test-FtUpdate -AppRoot $updApp)) 'added file: update'
+Save-FtInstallInfo -Destination $updApp -Source $updSource -Hash (Get-FtSourceHash -Root $updSource)
+Set-Content -LiteralPath (Join-Path $updSource 'README.md') -Value 'not copied'
+Assert-True ($null -eq (Test-FtUpdate -AppRoot $updApp)) 'file that is not installed: no update'
+Save-FtInstallInfo -Destination $updApp -Source (Join-Path $WorkDir 'update\missing') -Hash 'x'
+Assert-True ($null -eq (Test-FtUpdate -AppRoot $updApp)) 'source folder is gone: no update'
 
 Section 'FileItem'
 Assert-Equal '0 KB' ([FileTransfer.FileItem]::FormatSize(0)) 'size 0'

@@ -17,7 +17,9 @@ Python などのインストールは不要で、Windows 10 / 11 標準の Power
 2. 各自が `install.bat` をダブルクリックする（管理者権限は不要）
 3. デスクトップかスタートメニューの「FileTransfer」から起動する
 
-`%LOCALAPPDATA%\Programs\FileTransfer` にインストールされます。更新するときは `install.bat` をもう一度実行し、削除するときは `install.bat -Uninstall` を実行します。
+`%LOCALAPPDATA%\Programs\FileTransfer` にインストールされます。削除するときは `install.bat -Uninstall` を実行します。
+
+**更新**: 置いたフォルダのファイルを新しくすると、各自が次に FileTransfer を起動したときに「新しいバージョンがあるので更新します」と表示され、［OK］を押すと自動で更新して起動し直します。`install.bat` をもう一度実行しても更新できます。（起動時に、インストール元のファイル一式のハッシュを、インストール時に記録したもの（`install.json`）と比べています。インストール元に接続できないときは何も表示しません）
 
 インストールせずに試すときは `FileTransfer.bat` をダブルクリックします。
 
