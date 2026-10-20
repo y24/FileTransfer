@@ -147,7 +147,8 @@ $script:App.Resources.MergedDictionaries.Add((Read-FtXaml 'Styles.xaml'))
 $sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 $sessionState.ExecutionPolicy = [Microsoft.PowerShell.ExecutionPolicy]::Bypass
 $sessionState.ImportPSModule([string[]]$script:ModulePaths)
-$script:Pool = [runspacefactory]::CreateRunspacePool(1, 8, $sessionState, $Host)
+# タイムアウトした接続も終わるまで Runspace を使い続けるので、少し多めにしておく
+$script:Pool = [runspacefactory]::CreateRunspacePool(1, 16, $sessionState, $Host)
 $script:Pool.Open()
 
 #endregion
@@ -203,20 +204,27 @@ function Get-FtBrush { param([string]$Key) $script:App.Resources[$Key] }
 #region バックグラウンド処理 -----------------------------------------------------
 
 # Script を Runspace プールで実行し、終わったら UI スレッドで OnComplete（param($value, $err, $context)）を呼ぶ
+# TimeoutMs を付けると、その時間で待つのをやめて OnComplete に TimeoutException を渡す
+#   接続（WNetAddConnection2、WinRM）は途中で止められないので、処理自体はそのまま裏で終わるのを待つ
+#   遅れて終わったら OnLate（param($value, $context)）を呼ぶ（張れてしまった接続の後始末など）
 function Start-FtJob {
-    param([string]$Script, [hashtable]$Parameters = @{}, [scriptblock]$OnComplete, $Context = $null)
+    param([string]$Script, [hashtable]$Parameters = @{}, [scriptblock]$OnComplete, $Context = $null, [int]$TimeoutMs = 0, [scriptblock]$OnLate)
     $ps = [powershell]::Create()
     $ps.RunspacePool = $script:Pool
     [void]$ps.AddScript($Script)
     foreach ($key in $Parameters.Keys) { [void]$ps.AddParameter($key, $Parameters[$key]) }
     $handle = $ps.BeginInvoke()
-    [void]$script:Jobs.Add(@{ PowerShell = $ps; Handle = $handle; OnComplete = $OnComplete; Context = $Context })
+    $deadline = if ($TimeoutMs -gt 0) { (Get-Date).AddMilliseconds($TimeoutMs) } else { [datetime]::MaxValue }
+    [void]$script:Jobs.Add(@{ PowerShell = $ps; Handle = $handle; OnComplete = $OnComplete; Context = $Context; Deadline = $deadline; OnLate = $OnLate; TimedOut = $false })
 }
 
 function Update-FtJobs {
     # OnComplete の中でダイアログを出すと、その間もタイマーからここが呼ばれるので、終わったものを先に一覧から外しておく
     $completed = @($script:Jobs | Where-Object { $_.Handle.IsCompleted })
     foreach ($job in $completed) { $script:Jobs.Remove($job) }
+    $now = Get-Date
+    $expired = @($script:Jobs | Where-Object { -not $_.TimedOut -and $now -gt $_.Deadline })
+    foreach ($job in $expired) { $job.TimedOut = $true }
     foreach ($job in $completed) {
         $value = $null
         $err = $null
@@ -227,7 +235,14 @@ function Update-FtJobs {
             $err = $_.Exception
         }
         $job.PowerShell.Dispose()
-        if ($job.OnComplete) { & $job.OnComplete $value $err $job.Context }
+        if ($job.TimedOut) {
+            if ($job.OnLate -and -not $err) { & $job.OnLate $value $job.Context }
+        } elseif ($job.OnComplete) {
+            & $job.OnComplete $value $err $job.Context
+        }
+    }
+    foreach ($job in $expired) {
+        if ($job.OnComplete) { & $job.OnComplete $null (New-Object System.TimeoutException 'サーバーから応答がありません') $job.Context }
     }
 }
 
@@ -394,7 +409,7 @@ function Invoke-FtHostCheck {
             $jobScript = 'param($ShareRoot) Test-FtShareAccess -ShareRoot $ShareRoot'
             $parameters = @{ ShareRoot = $target.Root }
         }
-        Start-FtJob -Script $jobScript -Parameters $parameters -Context @{ Seq = $seq; HostName = $target.HostName } -OnComplete {
+        Start-FtJob -Script $jobScript -Parameters $parameters -Context @{ Seq = $seq; HostName = $target.HostName } -TimeoutMs 45000 -OnComplete {
                 param($value, $err, $context)
                 if ($context.Seq -ne $script:CheckSeq) { return }
                 $check = $script:Checks[$context.HostName]
@@ -1265,7 +1280,13 @@ $disconnected = if ($Disconnect) { Disconnect-FtHostConnections -HostName $Targe
             Targets = $targets; UserName = $user; Password = $d.PassBox.SecurePassword.Copy(); Save = $state.Save; Disconnect = [bool]$Disconnect
             Method = $state.Method; WinRm = (Get-FtWinRmOptions $script:Config)
         } `
-        -Context $state -OnComplete {
+        -Context $state -TimeoutMs 45000 -OnLate {
+            # タイムアウトのあとで接続できていたら、終了時に切断する
+            param($value, $context)
+            foreach ($result in @($value.Results)) {
+                if ($result -and $result.Status -eq 'ok' -and $result.Root -and -not $script:Connections.Contains($result.Root)) { $script:Connections.Add($result.Root) }
+            }
+        } -OnComplete {
             param($value, $err, $context)
             $context.Busy = $false
             $results = if ($value) { @($value.Results) } else { @() }
@@ -1284,7 +1305,9 @@ $disconnected = if ($Disconnect) { Disconnect-FtHostConnections -HostName $Targe
             $dd = $context.D
             $dd.OkButton.Content = 'OK'
             foreach ($control in $dd.OkButton, $dd.UserBox, $dd.PassBox, $dd.SaveBox, $dd.ApplyOthersBox) { $control.IsEnabled = $true }
-            if ($err -or $results.Count -eq 0) {
+            if ($err -is [System.TimeoutException]) {
+                $dd.ErrorText.Text = "$($context.HostName) から応答がありません（タイムアウト）。サーバーが起動しているか、ホスト名やネットワークの設定を確認して、もう一度お試しください。"
+            } elseif ($err -or $results.Count -eq 0) {
                 $dd.ErrorText.Text = if ($err) { $err.Message } else { '接続できませんでした。' }
             } elseif ($results[0].Status -eq 'ok') {
                 $context.Result = $results
@@ -1604,6 +1627,8 @@ Initialize-FtWindow
 
 if (-not $NoShow) {
     [void]$window.ShowDialog()
+    # 応答のない接続が裏で残っていると、PowerShell が終わらないことがあるので、待たずに終了する
+    if (@($script:Jobs | Where-Object { -not $_.Handle.IsCompleted }).Count -gt 0) { [System.Environment]::Exit(0) }
 }
 
 #endregion
