@@ -90,6 +90,14 @@ function Set-Destination {
 
 $thisHost = $env:COMPUTERNAME.ToUpperInvariant()
 
+# 送り先に同じ名前があるときの確認ダイアログは差し替える（既定は上書き。26 で名前を変える）
+function Confirm-FtOverwrite {
+    param([object[]]$Conflicts, [int]$TargetCount)
+    $script:OverwriteAsked = $Conflicts
+    return $script:OverwriteAnswer
+}
+$script:OverwriteAnswer = 'overwrite'
+
 # テスト用のファイル
 $src = Join-Path $WorkDir 'src'
 New-Item -ItemType Directory -Path "$src\patches", "$src\other", "$src\modules\sub" -Force | Out-Null
@@ -187,7 +195,7 @@ Save-Screen $window '08-needs-logon'
 Write-Host '08b server unreachable (simulated status) offers the SMB script'
 $script:Checks[$thisHost].Status = 'unreachable'
 Update-FtView
-Assert-True ($ui.HintText.Text -eq "$thisHost に接続できません  有効化スクリプトをコピー") "unreachable hint offers the script ($($ui.HintText.Text))"
+Assert-True ($ui.HintText.Text -eq "$thisHost に接続できません  有効化スクリプトをコピー  再試行") "unreachable hint offers the script and retry ($($ui.HintText.Text))"
 Save-Screen $window '08b-unreachable'
 Copy-FtSmbScript
 $copied = @([System.Windows.Clipboard]::GetFileDropList())
@@ -197,7 +205,7 @@ Save-Screen $window '08c-script-copied'
 Set-FtResult $null
 $script:Checks[$thisHost].Status = 'noshare'
 Update-FtView
-Assert-True ($ui.HintText.Text -like '*管理共有が無効の可能性があります*有効化スクリプトをコピー') "noshare hint offers the script ($($ui.HintText.Text))"
+Assert-True ($ui.HintText.Text -like '*管理共有が無効の可能性があります*有効化スクリプトをコピー  再試行') "noshare hint offers the script ($($ui.HintText.Text))"
 $script:Checks[$thisHost].Status = 'auth'
 Update-FtView
 
@@ -469,6 +477,43 @@ Set-FtMethod 'smb'
 Set-Destination $env:COMPUTERNAME 'C:\work\{datetime}'
 Assert-True ($ui.MethodBadge.Visibility -eq 'Collapsed' -and (Get-FtCheck $thisHost).Root -like '\\*') 'SMB again after switching back'
 $env:FILETRANSFER_TEST_WINRM_LOCAL = $null
+
+Write-Host '26 same name at the destination, then add the transferred files'
+Remove-FtItems @($script:Items)
+Add-FtPaths @("$src\other\設定_20261015.zip", "$src\modules")
+Wait-Until { $script:PendingSizes -eq 0 } -What 'folder size'
+$sameFolder = Join-Path $WorkDir 'samename'
+Set-Destination (Get-FtLocalLabel) $sameFolder
+$script:OverwriteAsked = $null
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'first transfer'
+Assert-True ($script:Phase -eq 'done' -and $null -eq $script:OverwriteAsked) 'no question when nothing has the same name'
+Assert-True ($ui.ReuseLink.Visibility -eq 'Visible' -and $ui.RdpLink.Visibility -eq 'Collapsed') 'local transfer offers adding the files to send'
+$script:OverwriteAnswer = 'cancel'
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'canceled by the same name'
+Assert-True (@($script:OverwriteAsked).Count -eq 2 -and $script:Phase -eq 'idle' -and $ui.ResultText.Text -like '*同じ名前*やめました*') "cancel stops the transfer ($($ui.ResultText.Text))"
+$script:OverwriteAnswer = 'rename'
+Start-FtTransfer
+Wait-Until { $script:Phase -ne 'running' } -What 'transfer with new names'
+Assert-True ($script:Phase -eq 'done') "renamed transfer done ($($ui.ResultText.Text))"
+Assert-True ((Test-Path -LiteralPath "$sameFolder\設定_20261015 (2).zip") -and (Test-Path -LiteralPath "$sameFolder\modules (2)\sub\b.dll")) 'sent with numbered names'
+Save-Screen $window '26-local-done'
+Add-FtTransferredItems
+$paths = @($script:Items | ForEach-Object { $_.Path })
+Assert-True ($paths.Count -eq 2 -and $paths -contains "$sameFolder\設定_20261015 (2).zip" -and $paths -contains "$sameFolder\modules (2)") "transferred files replace the originals ($($paths -join ', '))"
+Assert-True ($script:Phase -eq 'idle' -and $ui.ResultText.Text -like '*送るファイルに追加しました*') "notice after adding ($($ui.ResultText.Text))"
+Save-Screen $window '26b-added'
+$script:OverwriteAnswer = 'overwrite'
+
+$dialog = Read-FtXaml 'OverwriteDialog.xaml'
+$d = Get-FtNamedElements $dialog @('Heading', 'NameList', 'RenameNote')
+$d.Heading.Text = '送り先に同じ名前のファイル・フォルダがあります（2 件）'
+$d.NameList.Text = "設定_20261015.zip（SV-APP01、SV-APP02）`r`nmodules（SV-APP01）"
+$d.RenameNote.Text = "［上書き］同じ名前のものを置き換えます（フォルダは中のファイルを上書きします）`n［名前を変えて送る］設定_20261015.zip → 設定_20261015 (2).zip のように番号を付けて送ります"
+Show-Offscreen $dialog
+Save-Screen $dialog '26c-overwrite-dialog'
+$dialog.Close()
 
 $window.Close()
 $acl = Get-Acl -LiteralPath $denied

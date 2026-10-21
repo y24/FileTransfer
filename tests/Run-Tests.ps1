@@ -393,6 +393,36 @@ Assert-Equal 1 $space.Count 'a reused staging folder is not checked again'
 $space = Test-FtFreeSpace -Items @($spaceItems[0]) -Targets @(@{ Name = 'x'; Dest = '\\ft-nonexistent-host.invalid\C$\work' })
 Assert-True ($space[0].Free -eq -1 -and -not $space[0].Short) 'unknown free space is not reported as a shortage'
 
+Section 'Same name at the destination (overwrite / numbered name)'
+$parts = Split-FtName 'setup.exe' $false
+Assert-Equal 'setup|.exe' "$($parts.Base)|$($parts.Extension)" 'split a file name'
+$parts = Split-FtName '.gitignore' $false
+Assert-Equal '.gitignore|' "$($parts.Base)|$($parts.Extension)" 'a dot file has no extension'
+$parts = Split-FtName 'logs.v2' $true
+Assert-Equal 'logs.v2|' "$($parts.Base)|$($parts.Extension)" 'a folder has no extension'
+$nameDest = Join-Path $WorkDir 'samename'
+New-Item -ItemType Directory -Path "$nameDest\folder" -Force | Out-Null
+[IO.File]::WriteAllText("$nameDest\日本語ファイル.txt", 'old')
+[IO.File]::WriteAllText("$nameDest\日本語ファイル (2).txt", 'old2')
+$nameItems = @(
+    @{ Path = "$src\日本語ファイル.txt"; IsFolder = $false; Size = 5 },
+    @{ Path = "$src\folder"; IsFolder = $true; Size = 3 },
+    @{ Path = $big; IsFolder = $false; Size = 40MB }
+)
+$space = Test-FtFreeSpace -Items $nameItems -Targets @(@{ Name = 'このPC'; Dest = $nameDest })
+Assert-True ($space[0].IsTarget -and @($space[0].Existing).Count -eq 3) "existing similar names are listed ($(@($space[0].Existing) -join ', '))"
+$conflicts = Find-FtNameConflicts -Items $nameItems -SpaceResults $space
+Assert-Equal '日本語ファイル.txt,folder' (($conflicts | ForEach-Object { $_.Name }) -join ',') 'conflicting names'
+Set-FtNumberedNames -Items $nameItems -Conflicts $conflicts -SpaceResults $space
+Assert-Equal '日本語ファイル (3).txt|folder (2)|' ('{0}|{1}|{2}' -f $nameItems[0].DestName, $nameItems[1].DestName, $nameItems[2].DestName) 'numbered names skip names already taken'
+$sync = New-TestSync
+$result = Invoke-FtTransferPlan -Steps (New-FtTransferPlan -Items $nameItems -Destination $nameDest) -Sync $sync
+Assert-Equal 'success' $result.Status 'transfer with new names'
+Assert-Equal 'old|hello' ('{0}|{1}' -f [IO.File]::ReadAllText("$nameDest\日本語ファイル.txt"), [IO.File]::ReadAllText("$nameDest\日本語ファイル (3).txt")) 'the existing file is kept and the new one has a number'
+Assert-True ((Test-Path -LiteralPath "$nameDest\folder (2)\sub\b.txt") -and (Test-Path -LiteralPath "$nameDest\big file.bin")) 'renamed folder and unchanged file'
+Assert-Equal 0 @(Get-ChildItem -LiteralPath $nameDest -Filter '~FileTransfer_*' -Force).Count 'no work folder is left'
+Assert-Equal 0 (Find-FtNameConflicts -Items $nameItems -SpaceResults (Test-FtFreeSpace -Items $nameItems -Targets @(@{ Name = 'x'; Dest = "$nameDest\none" }))).Count 'no conflicts in a new folder'
+
 Section 'Distribution (two destinations, staging, partial failure)'
 $sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
 $sessionState.ExecutionPolicy = [Microsoft.PowerShell.ExecutionPolicy]::Bypass
@@ -558,6 +588,13 @@ Assert-True ($space.Count -eq 1 -and $space[0].Free -gt 0 -and $space[0].Require
 Assert-Equal ([IO.Path]::GetPathRoot($WorkDir).TrimEnd('\')) $space[0].Volume 'WinRM free space volume is the server drive'
 $access = Test-FtWinRmAccess -HostName 'TEST'
 Assert-True ($access.Status -eq 'ok' -and $access.User -eq [Security.Principal.WindowsIdentity]::GetCurrent().Name) "WinRM access check reports the remote user ($($access.User))"
+
+$renameItems = @(@{ Path = "$src\日本語ファイル.txt"; IsFolder = $false; Size = 5; DestName = '日本語ファイル (2).txt' }, @{ Path = "$src\folder"; IsFolder = $true; Size = 3; DestName = 'folder (2)' })
+$space = Test-FtFreeSpace -Items $renameItems -Targets @(@{ Name = 'TEST'; HostName = 'TEST'; Method = 'winrm'; Dest = $winrmDest })
+Assert-True (@($space[0].Existing) -contains '日本語ファイル.txt' -and @($space[0].Existing) -contains 'folder') "WinRM lists names already on the server ($(@($space[0].Existing) -join ', '))"
+$sync = New-TestSync
+$result = Invoke-FtWinRmTransferPlan -Steps (New-FtTransferPlan -Items $renameItems -Destination $winrmDest) -Sync $sync -HostName 'TEST'
+Assert-True ($result.Status -eq 'success' -and (Test-Path -LiteralPath "$winrmDest\日本語ファイル (2).txt") -and (Test-Path -LiteralPath "$winrmDest\folder (2)\sub\b.txt")) "WinRM sends with new names ($($result.Message))"
 
 Section 'WinRM cancel while copying'
 $sync = New-TestSync

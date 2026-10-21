@@ -64,7 +64,15 @@ try {
             while ($folder -and -not [System.IO.Directory]::Exists($folder)) { $folder = [System.IO.Path]::GetDirectoryName($folder) }
             $free = -1
             if ($folder) { $free = (New-Object System.IO.DriveInfo ([System.IO.Path]::GetPathRoot($folder))).AvailableFreeSpace }
-            return @{ Ok = $true; Free = [long]$free; Required = $required }
+            # Prefixes: 送り先にある、この文字で始まる名前を返す（同じ名前があるかの確認と、連番を付けるため）
+            $names = New-Object 'System.Collections.Generic.List[string]'
+            if ([System.IO.Directory]::Exists("$($Arguments.Path)")) {
+                foreach ($prefix in @($Arguments.Prefixes)) {
+                    if (-not $prefix) { continue }
+                    try { foreach ($entry in [System.IO.Directory]::GetFileSystemEntries("$($Arguments.Path)", "$prefix*")) { $names.Add([System.IO.Path]::GetFileName($entry)) } } catch { }
+                }
+            }
+            return @{ Ok = $true; Free = [long]$free; Required = $required; Names = $names.ToArray() }
         }
         'prepare' {
             # Dirs: 作るフォルダ、Files: @{ Path; Size; Time } → Same: 送り先に同じもの（サイズと更新日時が同じ）があるか
@@ -326,10 +334,11 @@ function Connect-FtWinRmGroup {
 
 # 送り先（サーバー上のパス）の空き容量と、必要な容量。戻り値は Test-FtFreeSpace の 1 件と同じ形（Free が -1 なら確認できなかった）
 function Get-FtWinRmFreeSpace {
-    param([string]$Name, [string]$HostName, [pscredential]$Credential, [string]$Path, [object[]]$Items, [hashtable]$WinRm = @{})
+    param([string]$Name, [string]$HostName, [pscredential]$Credential, [string]$Path, [object[]]$Items, [hashtable]$WinRm = @{}, [string[]]$Prefixes = @())
     $files = @()
     $folderBytes = 0L
     $required = 0L
+    $existing = @()
     foreach ($item in $Items) {
         $required += [long]$item.Size
         if ($item.IsFolder) { $folderBytes += [long]$item.Size }
@@ -339,10 +348,11 @@ function Get-FtWinRmFreeSpace {
     $connection = $null
     try {
         $connection = Open-FtWinRmConnection -HostName $HostName -Credential $Credential -WinRm $WinRm
-        $space = Invoke-FtWinRmAgent -Runspace $connection.Runspace -Command 'space' -Arguments @{ Path = $Path; Files = $files; Bytes = $folderBytes }
+        $space = Invoke-FtWinRmAgent -Runspace $connection.Runspace -Command 'space' -Arguments @{ Path = $Path; Files = $files; Bytes = $folderBytes; Prefixes = $Prefixes }
         if ($space.Ok) {
             $free = [long]$space.Free
             $required = [long]$space.Required
+            $existing = [string[]]@($space.Names | Where-Object { $_ })
         }
     } catch {
     } finally {
@@ -355,6 +365,8 @@ function Get-FtWinRmFreeSpace {
         Free     = $free
         Required = $required
         Short    = ($free -ge 0 -and $free -lt $required)
+        IsTarget = $true
+        Existing = $existing
     }
 }
 
@@ -365,6 +377,9 @@ function Get-FtWinRmFreeSpace {
 # -WhatIf で出す 1 行
 function Format-FtWinRmStep {
     param([hashtable]$Step)
+    if ($Step.Rename) {
+        return 'WinRM "{0}" → "{1}"' -f (Join-FtWinRmPath $Step.Source $Step.Files[0]), (Join-FtWinRmPath $Step.Dest $Step.Rename)
+    }
     if ($Step.Kind -eq 'files') {
         return 'WinRM "{0}" → "{1}"  {2}' -f $Step.Source, $Step.Dest, (@($Step.Files | ForEach-Object { '"' + $_ + '"' }) -join ' ')
     }
@@ -432,7 +447,9 @@ function Get-FtWinRmStepEntries {
             if (-not $info.Exists) { $entries.Missing += $name; continue }
             $item = $byName[$name]
             if ($null -eq $item) { $item = $Step.Items[0] }
-            $entries.Files.Add(@{ Source = $info.FullName; Dest = (Join-FtWinRmPath $Step.Dest $name); Size = $info.Length; Time = $info.LastWriteTimeUtc.Ticks; Item = $item; Same = $false })
+            # Rename: 送り先に同じ名前があったので、名前を変えて送る
+            $destName = if ($Step.Rename) { "$($Step.Rename)" } else { $name }
+            $entries.Files.Add(@{ Source = $info.FullName; Dest = (Join-FtWinRmPath $Step.Dest $destName); Size = $info.Length; Time = $info.LastWriteTimeUtc.Ticks; Item = $item; Same = $false })
         }
         return $entries
     }

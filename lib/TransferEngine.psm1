@@ -54,16 +54,33 @@ function Add-FtSteps {
     foreach ($entry in $Entries) {
         $item = $entry.Item
         $name = [System.IO.Path]::GetFileName($item.Path.TrimEnd('\'))
+        # DestName: 送り先に同じ名前があったので、名前を変えて送る（送り先へのコピーのときだけ）
+        $destName = if ($Final -and $item.DestName) { "$($item.DestName)" } else { $name }
         if ($item.IsFolder) {
             $Steps.Add(@{
                 Kind   = 'folder'
                 Source = Join-FtPath $entry.Parent $name
-                Dest   = Join-FtPath $Destination $name
+                Dest   = Join-FtPath $Destination $destName
                 Files  = @()
                 Items  = @($item.Path)
                 Bytes  = [long]$item.Size
                 Large  = $false
                 Final  = $Final
+            })
+            continue
+        }
+        if ($destName -cne $name) {
+            # 名前を変えるファイルは 1 つずつ送る（robocopy は名前を変えてコピーできないので、Invoke-FtTransferPlan で移し替える）
+            $Steps.Add(@{
+                Kind   = 'files'
+                Source = $entry.Parent
+                Dest   = $Destination
+                Files  = @($name)
+                Items  = @($item.Path)
+                Bytes  = [long]$item.Size
+                Large  = ([long]$item.Size -ge $LargeThresholdBytes)
+                Final  = $Final
+                Rename = $destName
             })
             continue
         }
@@ -313,9 +330,34 @@ function Invoke-FtTransferPlan {
             if ($Sync.Cancel) { $result.Status = 'canceled'; break }
             $step = $Steps[$i]
             $Sync.StepIndex = $i
-            $arguments = Get-FtRobocopyArguments -Step $step -RetryCount $RetryCount -RetryWaitSec $RetryWaitSec -Threads $Threads
+            # 名前を変えて送るファイルは、送り先の作業用フォルダにコピーしてから、新しい名前で移す
+            $copyStep = $step
+            if ($step.Rename) {
+                $copyStep = $step.Clone()
+                $copyStep.Dest = Join-FtPath $step.Dest ('~FileTransfer_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            }
+            $arguments = Get-FtRobocopyArguments -Step $copyStep -RetryCount $RetryCount -RetryWaitSec $RetryWaitSec -Threads $Threads
             Write-FtSyncLog $Sync "robocopy $arguments"
-            $outcome = Invoke-FtRobocopyStep -Step $step -Sync $Sync -Arguments $arguments -Encoding $encoding -DoneBase $doneBase
+            try {
+                $outcome = Invoke-FtRobocopyStep -Step $copyStep -Sync $Sync -Arguments $arguments -Encoding $encoding -DoneBase $doneBase
+                if ($step.Rename -and -not $Sync.Cancel -and $outcome.ExitCode -lt 8 -and $outcome.Missing.Count -eq 0) {
+                    $final = Join-FtPath $step.Dest $step.Rename
+                    try {
+                        [System.IO.File]::Move((Join-FtPath $copyStep.Dest $step.Files[0]), $final)
+                        Write-FtSyncLog $Sync "  名前を変えました: $final"
+                    } catch {
+                        $inner = $_.Exception
+                        while ($inner.InnerException) { $inner = $inner.InnerException }
+                        $hr = [System.Runtime.InteropServices.Marshal]::GetHRForException($inner)
+                        $outcome.ExitCode = 8
+                        $outcome.ErrorCode = if (($hr -band 0xFFFF0000) -eq 0x80070000) { $hr -band 0xFFFF } else { 0 }
+                        $outcome.ErrorText = "名前を変えられませんでした: $final（$($inner.Message)）"
+                        Write-FtSyncLog $Sync "  $($outcome.ErrorText)"
+                    }
+                }
+            } finally {
+                if ($step.Rename -and (Test-Path -LiteralPath $copyStep.Dest)) { Remove-Item -LiteralPath $copyStep.Dest -Recurse -Force -ErrorAction SilentlyContinue }
+            }
             if ($Sync.Cancel) { $result.Status = 'canceled'; break }
             Write-FtSyncLog $Sync "  終了コード $($outcome.ExitCode)"
             if ($outcome.ExitCode -ge 8 -or $outcome.Missing.Count -gt 0) {

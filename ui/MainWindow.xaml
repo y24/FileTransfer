@@ -161,6 +161,8 @@
       <TextBlock x:Name="ResultText" Grid.Column="1" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
       <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="4,0,0,0">
         <Button x:Name="OpenLink" Style="{StaticResource LinkButton}" Content="開く" ToolTip="エクスプローラーで送り先を開く"/>
+        <Button x:Name="ReuseLink" Style="{StaticResource LinkButton}" Content="送るファイルに追加"
+                ToolTip="この PC に転送したファイルを、送るファイルの一覧に入れます（転送元のファイルと入れ替えます）"/>
         <Button x:Name="RdpLink" Style="{StaticResource LinkButton}" Content="RDP" ToolTip="リモートデスクトップで接続"/>
         <Button x:Name="DisconnectLink" Style="{StaticResource LinkButton}" Content="切断して再試行"
                 ToolTip="この PC からそのサーバーへの接続（ネットワーク ドライブなど）を切断して、接続し直す"/>

@@ -337,7 +337,8 @@ function Get-FtRequiredBytes {
 
 # 転送前に、送り先（と取得用のフォルダ）の空き容量を確かめる（バックグラウンドで呼ぶ）
 # Method が winrm の送り先は、サーバーに WinRM で接続して調べる
-# 戻り値: @{ Name; Path; Volume; Free; Required; Short } の配列。Free が -1 なら確認できなかった
+# 戻り値: @{ Name; Path; Volume; Free; Required; Short; IsTarget; Existing } の配列。Free が -1 なら確認できなかった
+#   IsTarget: 送り先（取得用のフォルダでない）、Existing: 送り先にある、送るものと似た名前（Find-FtNameConflicts で使う）
 function Test-FtFreeSpace {
     param(
         [object[]]$Items,
@@ -352,18 +353,19 @@ function Test-FtFreeSpace {
         foreach ($item in $Items) { if ($item.Path -like '\\*') { $required += [long]$item.Size } }
         if ($required -gt 0) { $checks += @{ Name = 'この PC（取得用）'; Path = $StageFolder; Required = $required } }
     }
+    $prefixes = Get-FtNamePrefixes $Items
     foreach ($target in $Targets) {
         if ("$($target.Method)" -eq 'winrm' -and -not $target.IsLocal) {
             $checks += @{ Target = $target }
             continue
         }
-        $checks += @{ Name = $target.Name; Path = $target.Dest; Required = (Get-FtRequiredBytes -Items $Items -Dest $target.Dest) }
+        $checks += @{ Name = $target.Name; Path = $target.Dest; Required = (Get-FtRequiredBytes -Items $Items -Dest $target.Dest); IsTarget = $true }
     }
     $results = @()
     foreach ($check in $checks) {
         if ($check.Target) {
             $target = $check.Target
-            $results += Get-FtWinRmFreeSpace -Name $target.Name -HostName $target.HostName -Credential $target.Credential -Path $target.Dest -Items $Items -WinRm $WinRm
+            $results += Get-FtWinRmFreeSpace -Name $target.Name -HostName $target.HostName -Credential $target.Credential -Path $target.Dest -Items $Items -WinRm $WinRm -Prefixes $prefixes
             continue
         }
         $folder = Get-FtExistingFolder $check.Path
@@ -375,9 +377,71 @@ function Test-FtFreeSpace {
             Free     = $free
             Required = [long]$check.Required
             Short    = ($free -ge 0 -and $free -lt $check.Required)
+            IsTarget = [bool]$check.IsTarget
+            Existing = $(if ($check.IsTarget) { Get-FtExistingNames -Path $check.Path -Prefixes $prefixes } else { @() })
         }
     }
     return , $results
+}
+
+# 名前を、連番を付ける部分（拡張子の前）と拡張子に分ける。フォルダと「.gitignore」のような名前は拡張子なし
+function Split-FtName {
+    param([string]$Name, [bool]$IsFolder)
+    $base = if ($IsFolder) { '' } else { [System.IO.Path]::GetFileNameWithoutExtension($Name) }
+    if (-not $base) { return @{ Base = $Name; Extension = '' } }
+    return @{ Base = $base; Extension = $Name.Substring($base.Length) }
+}
+
+# 送り先にあるか調べる名前の先頭部分（「setup (2).exe」も見つかるように拡張子を除く）
+function Get-FtNamePrefixes {
+    param([object[]]$Items)
+    $prefixes = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in $Items) {
+        [void]$prefixes.Add((Split-FtName ([System.IO.Path]::GetFileName($item.Path.TrimEnd('\'))) ([bool]$item.IsFolder)).Base)
+    }
+    return [string[]]@($prefixes)
+}
+
+# 送り先のフォルダにある、Prefixes で始まる名前（フォルダがまだなければ空）
+function Get-FtExistingNames {
+    param([string]$Path, [string[]]$Prefixes)
+    $names = New-Object System.Collections.Generic.List[string]
+    if (-not [System.IO.Directory]::Exists($Path)) { return , $names.ToArray() }
+    foreach ($prefix in $Prefixes) {
+        try {
+            foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($Path, "$prefix*")) { $names.Add([System.IO.Path]::GetFileName($entry)) }
+        } catch { }
+    }
+    return , $names.ToArray()
+}
+
+# 送り先に同じ名前のファイル・フォルダがある項目（Test-FtFreeSpace の結果の Existing から調べる）
+# 戻り値: @{ Item; Name; Targets（同じ名前がある送り先の名前）} の配列
+function Find-FtNameConflicts {
+    param([object[]]$Items, [object[]]$SpaceResults)
+    $conflicts = @()
+    foreach ($item in $Items) {
+        $name = [System.IO.Path]::GetFileName($item.Path.TrimEnd('\'))
+        $targets = @($SpaceResults | Where-Object { $_ -and $_.IsTarget -and @($_.Existing | Where-Object { $_ -ieq $name }).Count -gt 0 } | ForEach-Object { $_.Name })
+        if ($targets.Count -gt 0) { $conflicts += @{ Item = $item; Name = $name; Targets = $targets } }
+    }
+    return , $conflicts
+}
+
+# 同じ名前がある項目に、どの送り先にもない名前（「setup (2).exe」「logs (2)」）を DestName として付ける
+function Set-FtNumberedNames {
+    param([object[]]$Items, [object[]]$Conflicts, [object[]]$SpaceResults)
+    $taken = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($result in @($SpaceResults | Where-Object { $_ -and $_.IsTarget })) { foreach ($name in @($result.Existing)) { if ($name) { [void]$taken.Add($name) } } }
+    foreach ($item in $Items) { [void]$taken.Add([System.IO.Path]::GetFileName($item.Path.TrimEnd('\'))) }
+    foreach ($conflict in $Conflicts) {
+        $parts = Split-FtName $conflict.Name ([bool]$conflict.Item.IsFolder)
+        $number = 2
+        while ($taken.Contains(('{0} ({1}){2}' -f $parts.Base, $number, $parts.Extension))) { $number++ }
+        $newName = '{0} ({1}){2}' -f $parts.Base, $number, $parts.Extension
+        [void]$taken.Add($newName)
+        $conflict.Item.DestName = $newName
+    }
 }
 
 # 「SV-APP02（\\SV-APP02\C$）：空き 1.20 GB ／ 必要 3.50 GB」
@@ -387,4 +451,4 @@ function Format-FtFreeSpace {
     return '{0}（{1}）：空き {2} ／ 必要 {3}' -f $Result.Name, $Result.Volume, $free, [FileTransfer.FileItem]::FormatSize($Result.Required)
 }
 
-Export-ModuleMember -Function Get-FtExistingFolder, Get-FtRequiredBytes, Test-FtFreeSpace, Format-FtFreeSpace, New-FtSync, Get-FtStageFolder, Get-FtStageRoot, Remove-FtStageFolder, New-FtDistribution, Step-FtDistribution, Stop-FtDistribution, Read-FtDistributionLog, Get-FtDistributionProgress, Get-FtDistributionSummary
+Export-ModuleMember -Function Get-FtExistingFolder, Get-FtRequiredBytes, Test-FtFreeSpace, Format-FtFreeSpace, Split-FtName, Get-FtNamePrefixes, Get-FtExistingNames, Find-FtNameConflicts, Set-FtNumberedNames, New-FtSync, Get-FtStageFolder, Get-FtStageRoot, Remove-FtStageFolder, New-FtDistribution, Step-FtDistribution, Stop-FtDistribution, Read-FtDistributionLog, Get-FtDistributionProgress, Get-FtDistributionSummary

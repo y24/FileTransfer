@@ -188,7 +188,7 @@ $ui = Get-FtNamedElements $window @(
     'CountText', 'ClearButton', 'AddFolderButton', 'AddButton', 'FileList', 'EmptyHint',
     'MethodBadge', 'MethodText', 'SettingsButton',
     'DestBox', 'DestBadge', 'DestDot', 'DestPcIcon', 'FolderBox', 'HintText',
-    'ResultPanel', 'ResultIcon', 'ResultText', 'OpenLink', 'RdpLink', 'DisconnectLink', 'LogonLink', 'DetailLink',
+    'ResultPanel', 'ResultIcon', 'ResultText', 'OpenLink', 'ReuseLink', 'RdpLink', 'DisconnectLink', 'LogonLink', 'DetailLink',
     'StartButton', 'ProgressPanel', 'TotalProgress', 'ProgressText', 'CancelButton')
 $ui.FileList.ItemsSource = $script:Items
 
@@ -613,6 +613,13 @@ function Set-FtHint {
         $link.ToolTip = "サーバーで SMB（ファイル共有）を有効にするスクリプト（EnableSMB.bat）をクリップボードにコピーします。`nサーバーに RDP で接続してデスクトップなどに Ctrl+V で貼り付け、ダブルクリックで実行してください（管理者権限で実行されます）"
         $link.Add_Click({ Copy-FtSmbScript })
         $hint.Inlines.Add($link)
+        # スクリプトで SMB を有効にしたあと、接続を確認し直す（つながれば転送できるようになる）
+        $hint.Inlines.Add((New-Object System.Windows.Documents.Run '  '))
+        $link = New-Object System.Windows.Documents.Hyperlink (New-Object System.Windows.Documents.Run '再試行')
+        $link.Foreground = Get-FtBrush 'AccentBrush'
+        $link.ToolTip = 'サーバーへの接続を確認し直します（サーバーでスクリプトを実行したあとに）'
+        $link.Add_Click({ Request-FtHostCheck -Immediate })
+        $hint.Inlines.Add($link)
     }
 }
 
@@ -760,7 +767,7 @@ function Update-FtView {
     $ui.StartButton.IsEnabled = Test-FtCanStart
 }
 
-# 結果の行: Kind = ok | error | warn | info、Links = 表示するリンク（Open, Rdp, Logon, Detail）
+# 結果の行: Kind = ok | error | warn | info、Links = 表示するリンク（Open, Reuse, Rdp, Disconnect, Logon, Detail）
 function Set-FtResult {
     param([string]$Kind, [string]$Text, [string[]]$Links = @())
     if (-not $Kind) { $ui.ResultPanel.Visibility = 'Collapsed'; return }
@@ -776,6 +783,7 @@ function Set-FtResult {
     $ui.ResultText.Foreground = $brush
     $ui.ResultText.ToolTip = $Text
     $ui.OpenLink.Visibility = if ($Links -contains 'Open') { 'Visible' } else { 'Collapsed' }
+    $ui.ReuseLink.Visibility = if ($Links -contains 'Reuse') { 'Visible' } else { 'Collapsed' }
     $ui.RdpLink.Visibility = if ($Links -contains 'Rdp') { 'Visible' } else { 'Collapsed' }
     $ui.DisconnectLink.Visibility = if ($Links -contains 'Disconnect') { 'Visible' } else { 'Collapsed' }
     $ui.LogonLink.Visibility = if ($Links -contains 'Logon') { 'Visible' } else { 'Collapsed' }
@@ -864,6 +872,26 @@ function Invoke-FtResultLink {
     }
 }
 
+# 結果の行の［送るファイルに追加］: 「このPC」に転送したファイルを、送るファイルの一覧に入れる
+# 同じ名前のものは一覧に入れられないので、転送元のファイルと入れ替える
+function Add-FtTransferredItems {
+    if ($script:Phase -ne 'done' -or -not $script:Run -or -not $script:Run.IsLocal -or -not $script:Run.Dist) { return }
+    $dest = @($script:Run.Dist.Hosts)[0].Dest
+    $sent = @($script:Run.Pending.Items | ForEach-Object { $_.Path })
+    $paths = @($script:Run.Pending.Items | ForEach-Object {
+        $name = if ($_.DestName) { $_.DestName } else { [System.IO.Path]::GetFileName($_.Path.TrimEnd('\')) }
+        Join-Path $dest $name
+    })
+    Remove-FtItems @($script:Items | Where-Object { $sent -contains $_.Path })
+    Add-FtPaths $paths
+    $added = @($script:Items | Where-Object { $paths -contains $_.Path }).Count
+    if ($added -lt $paths.Count) {
+        Show-FtNotice "転送したファイルのうち $added 件を送るファイルに追加しました（見つからないものがありました）" 'warn'
+    } else {
+        Show-FtNotice "転送したファイル（$added 件）を送るファイルに追加しました。送り先をサーバーに変えて転送できます" 'ok'
+    }
+}
+
 #endregion
 
 #region 転送 --------------------------------------------------------------------
@@ -930,6 +958,12 @@ function Start-FtTransfer {
 
     # [Math]::Max(0, long) は Int32 版が選ばれて 2 GB を超えると失敗するので、long 同士で比べる
     $items = @($script:Items | ForEach-Object { @{ Path = $_.Path; IsFolder = $_.IsFolder; Size = [Math]::Max([long]0, [long]$_.Size) } })
+    if ($retry) {
+        # やり直しは、最初に決めた名前（同じ名前があって名前を変えたもの）で送る
+        $previous = @{}
+        foreach ($item in @($script:Run.Pending.Items)) { if ($item.DestName) { $previous[$item.Path] = $item.DestName } }
+        foreach ($item in $items) { if ($previous.ContainsKey($item.Path)) { $item.DestName = $previous[$item.Path] } }
+    }
     $transfer = $script:Config.transfer
     $stage = if ($retry) { $script:Run.Stage } else {
         Get-FtStageFolder -Items $items -TargetCount $allTargets.Count -IsLocal $resolved.IsLocal `
@@ -992,6 +1026,32 @@ function Confirm-FtLowSpace {
     return ([System.Windows.MessageBox]::Show($window, $message, 'FileTransfer', 'YesNo', 'Warning') -eq 'Yes')
 }
 
+# 送り先に同じ名前のものがあるときに、どうするか聞く（テストでは差し替える）
+# Conflicts: Find-FtNameConflicts の結果（Item.DestName に、名前を変えるときの名前が入っている）
+# 戻り値: overwrite | rename | cancel
+function Confirm-FtOverwrite {
+    param([object[]]$Conflicts, [int]$TargetCount)
+    $dialog = Read-FtXaml 'OverwriteDialog.xaml'
+    $dialog.Owner = $window
+    $d = Get-FtNamedElements $dialog @('Heading', 'NameList', 'RenameNote', 'OverwriteButton', 'RenameButton', 'CancelButton')
+    $hasFolder = @($Conflicts | Where-Object { $_.Item.IsFolder }).Count -gt 0
+    $hasFile = @($Conflicts | Where-Object { -not $_.Item.IsFolder }).Count -gt 0
+    $kind = if ($hasFolder -and $hasFile) { 'ファイル・フォルダ' } elseif ($hasFolder) { 'フォルダ' } else { 'ファイル' }
+    $d.Heading.Text = "送り先に同じ名前の$($kind)があります（$($Conflicts.Count) 件）"
+    $d.NameList.Text = (@($Conflicts | ForEach-Object {
+        $where = if ($TargetCount -gt 1) { "（$($_.Targets -join '、')）" } else { '' }
+        "$($_.Name)$where"
+    }) -join "`r`n")
+    $first = $Conflicts[0]
+    $d.RenameNote.Text = "［上書き］同じ名前のものを置き換えます" + $(if ($hasFolder) { '（フォルダは中のファイルを上書きします）' } else { '' }) + "`n" +
+        "［名前を変えて送る］$($first.Name) → $($first.Item.DestName) のように番号を付けて送ります"
+    $dialog.Tag = 'cancel'
+    $d.OverwriteButton.Add_Click({ param($sender, $e) $w = [System.Windows.Window]::GetWindow($sender); $w.Tag = 'overwrite'; $w.DialogResult = $true })
+    $d.RenameButton.Add_Click({ param($sender, $e) $w = [System.Windows.Window]::GetWindow($sender); $w.Tag = 'rename'; $w.DialogResult = $true })
+    [void]$dialog.ShowDialog()
+    return "$($dialog.Tag)"
+}
+
 # 空き容量の確認が済んだら、転送を始める
 function Resume-FtTransfer {
     param([object[]]$SpaceResults, $SpaceError)
@@ -1018,6 +1078,28 @@ function Resume-FtTransfer {
     }
 
     $pending = $run.Pending
+    # 送り先に同じ名前のものがあれば、上書きするか・名前を変えるか聞く（やり直しのときは、最初に決めたとおりにする）
+    $conflicts = @()
+    $renamed = @()
+    if (-not $pending.Retry) {
+        $conflicts = Find-FtNameConflicts -Items $pending.Items -SpaceResults $SpaceResults
+        if ($conflicts.Count -gt 0) {
+            Set-FtNumberedNames -Items $pending.Items -Conflicts $conflicts -SpaceResults $SpaceResults
+            $answer = Confirm-FtOverwrite -Conflicts $conflicts -TargetCount $pending.Targets.Count
+            if ($answer -eq 'rename') {
+                $renamed = $conflicts
+            } else {
+                foreach ($conflict in $conflicts) { $conflict.Item.Remove('DestName') }
+            }
+            if ($answer -notin 'overwrite', 'rename') {
+                $script:Phase = 'idle'
+                Clear-FtRunStage
+                Show-FtNotice '送り先に同じ名前のものがあるため、転送をやめました' 'warn'
+                Update-FtView
+                return
+            }
+        }
+    }
     $stage = $pending.Stage
     $run.Dist = New-FtDistribution -Items $pending.Items -Targets $pending.Targets -StageFolder $(if ($stage) { $stage.Folder } else { '' }) `
         -ReuseStage:$pending.Retry -Options $pending.Options -Pool $script:Pool
@@ -1035,6 +1117,8 @@ function Resume-FtTransfer {
         Add-FtRunLog "  $note`: $($stage.Folder)"
     }
     foreach ($shortage in $shortages) { Add-FtRunLog "  空き容量が足りないまま転送: $(Format-FtFreeSpace $shortage)" }
+    foreach ($conflict in $renamed) { Add-FtRunLog "  送り先に同じ名前があるため、名前を変えて送ります: $($conflict.Name) → $($conflict.Item.DestName)" }
+    foreach ($conflict in $conflicts) { if (-not $conflict.Item.DestName) { Add-FtRunLog "  送り先の同じ名前のものを上書きします: $($conflict.Name)" } }
     Save-FtHistory
 
     $ui.ProgressText.Text = '接続しています…'
@@ -1119,7 +1203,8 @@ function Complete-FtTransfer {
             # WinRM で送ったサーバーは、エクスプローラーで開けない（ファイル共有が使えない）ので［開く］を出さない
             $links = @()
             if ($run.Method -ne 'winrm') { $links += 'Open' }
-            if (-not $run.IsLocal) { $links += 'Rdp' }
+            # 「このPC」へ転送したら、そのファイルをサーバーへ送れるように［送るファイルに追加］を出す
+            if ($run.IsLocal) { $links += 'Reuse' } else { $links += 'Rdp' }
             Set-FtResult 'ok' $text $links
             Clear-FtRunStage
         }
@@ -1493,6 +1578,7 @@ $ui.DisconnectLink.Add_Click({ Request-FtDisconnect $script:DisconnectTargets })
 $ui.DetailLink.Add_Click({ Show-FtDetails })
 $ui.OpenLink.Add_Click({ Invoke-FtResultLink $ui.OpenLink 'open' })
 $ui.RdpLink.Add_Click({ Invoke-FtResultLink $ui.RdpLink 'rdp' })
+$ui.ReuseLink.Add_Click({ Add-FtTransferredItems })
 
 # 一覧の行の ×
 $ui.FileList.AddHandler([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, [System.Windows.RoutedEventHandler] {
