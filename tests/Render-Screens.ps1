@@ -195,7 +195,7 @@ Save-Screen $window '08-needs-logon'
 Write-Host '08b server unreachable (simulated status) offers the SMB script'
 $script:Checks[$thisHost].Status = 'unreachable'
 Update-FtView
-Assert-True ($ui.HintText.Text -eq "$thisHost に接続できません  有効化スクリプトをコピー  再試行") "unreachable hint offers the script and retry ($($ui.HintText.Text))"
+Assert-True ($ui.HintText.Text -eq "$thisHost に接続できません  再試行  有効化スクリプトをコピー") "unreachable hint offers the script and retry ($($ui.HintText.Text))"
 Save-Screen $window '08b-unreachable'
 Copy-FtSmbScript
 $copied = @([System.Windows.Clipboard]::GetFileDropList())
@@ -205,7 +205,7 @@ Save-Screen $window '08c-script-copied'
 Set-FtResult $null
 $script:Checks[$thisHost].Status = 'noshare'
 Update-FtView
-Assert-True ($ui.HintText.Text -like '*管理共有が無効の可能性があります*有効化スクリプトをコピー  再試行') "noshare hint offers the script ($($ui.HintText.Text))"
+Assert-True ($ui.HintText.Text -like '*管理共有が無効の可能性があります*再試行  有効化スクリプトをコピー') "noshare hint offers the script ($($ui.HintText.Text))"
 $script:Checks[$thisHost].Status = 'auth'
 Update-FtView
 

@@ -607,18 +607,18 @@ function Set-FtHint {
         $hint.Inlines.Add($link)
     }
     if ($WithSmbScript) {
-        $hint.Inlines.Add((New-Object System.Windows.Documents.Run '  '))
-        $link = New-Object System.Windows.Documents.Hyperlink (New-Object System.Windows.Documents.Run '有効化スクリプトをコピー')
-        $link.Foreground = Get-FtBrush 'AccentBrush'
-        $link.ToolTip = "サーバーで SMB（ファイル共有）を有効にするスクリプト（EnableSMB.bat）をクリップボードにコピーします。`nサーバーに RDP で接続してデスクトップなどに Ctrl+V で貼り付け、ダブルクリックで実行してください（管理者権限で実行されます）"
-        $link.Add_Click({ Copy-FtSmbScript })
-        $hint.Inlines.Add($link)
         # スクリプトで SMB を有効にしたあと、接続を確認し直す（つながれば転送できるようになる）
         $hint.Inlines.Add((New-Object System.Windows.Documents.Run '  '))
         $link = New-Object System.Windows.Documents.Hyperlink (New-Object System.Windows.Documents.Run '再試行')
         $link.Foreground = Get-FtBrush 'AccentBrush'
         $link.ToolTip = 'サーバーへの接続を確認し直します（サーバーでスクリプトを実行したあとに）'
         $link.Add_Click({ Request-FtHostCheck -Immediate })
+        $hint.Inlines.Add($link)
+        $hint.Inlines.Add((New-Object System.Windows.Documents.Run '  '))
+        $link = New-Object System.Windows.Documents.Hyperlink (New-Object System.Windows.Documents.Run '有効化スクリプトをコピー')
+        $link.Foreground = Get-FtBrush 'AccentBrush'
+        $link.ToolTip = "サーバーで SMB（ファイル共有）を有効にするスクリプト（EnableSMB.bat）をクリップボードにコピーします。`nサーバーに RDP で接続してデスクトップなどに Ctrl+V で貼り付け、ダブルクリックで実行してください（管理者権限で実行されます）"
+        $link.Add_Click({ Copy-FtSmbScript })
         $hint.Inlines.Add($link)
     }
 }
